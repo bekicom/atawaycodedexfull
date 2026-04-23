@@ -1,0 +1,31 @@
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Node
+**/node_modules/
+npm-cache/
+
+# Flutter/Dart
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/build/
+**/.pub-cache/
+
+# Logs/temp
+*.log
+*.err.log
+*.out.log
+tmp/
+
+# Backup nested git dirs
+**/.git_backup_codex/
+
+# Archives/binaries
+*.zip
+*.7z
+*.exe
