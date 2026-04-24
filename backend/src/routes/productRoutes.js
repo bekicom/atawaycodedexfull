@@ -26,6 +26,20 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
+function parseOptionalPrice(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return null;
+  return roundMoney(numeric);
+}
+
+function pickFirstPrice(...values) {
+  for (const value of values) {
+    if (value !== null && value !== undefined) return value;
+  }
+  return null;
+}
+
 function normalizeBarcode(value) {
   return String(value || "").trim();
 }
@@ -591,17 +605,31 @@ router.post("/sync-central", authMiddleware, async (req, res) => {
       const itemBarcodeSet = normalizeBarcodeSet(item.barcode, item.barcodeAliases);
       const itemCodes = [itemBarcodeSet.barcode, ...itemBarcodeSet.barcodeAliases].filter(Boolean);
       const itemModel = String(item.model || "-").trim() || "-";
-      const exists = await Product.exists(tenantFilter(req, {
+      const matchedProduct = await Product.findOne(tenantFilter(req, {
         $or: [
           ...(itemCodes.length
             ? [{ barcode: { $in: itemCodes } }, { barcodeAliases: { $in: itemCodes } }]
             : []),
           { name: itemName, model: itemModel }
         ]
-      }));
-      if (!exists) {
+      }))
+        .select({ barcode: 1, barcodeAliases: 1 })
+        .lean();
+      if (!matchedProduct) {
         needsResync = true;
         break;
+      }
+
+      if (itemCodes.length) {
+        const localCodes = new Set([
+          normalizeBarcode(matchedProduct.barcode),
+          ...normalizeBarcodeAliases(matchedProduct.barcodeAliases),
+        ].filter(Boolean));
+        const missingIncomingCode = itemCodes.some((code) => !localCodes.has(code));
+        if (missingIncomingCode) {
+          needsResync = true;
+          break;
+        }
       }
     }
 
@@ -636,6 +664,58 @@ router.post("/sync-central", authMiddleware, async (req, res) => {
 
   let syncedTransfers = 0;
   let syncedProducts = 0;
+  const centralPriceByProductId = new Map();
+  const centralPriceByBarcode = new Map();
+
+  try {
+    const productsResponse = await fetch(`${centralBaseUrl}/products`, {
+      method: "GET",
+      headers: { ...headers, Authorization: `Bearer ${centralToken}` }
+    });
+    if (productsResponse.ok) {
+      const productsPayload = await productsResponse.json();
+      const centralProducts = Array.isArray(productsPayload?.products)
+        ? productsPayload.products
+        : [];
+
+      for (const rawCentralProduct of centralProducts) {
+        const centralProduct = rawCentralProduct || {};
+        const retailPrice = pickFirstPrice(
+          parseOptionalPrice(centralProduct.retailPrice),
+          parseOptionalPrice(centralProduct.sellPrice),
+          parseOptionalPrice(centralProduct.sellingPrice),
+          parseOptionalPrice(centralProduct.salePrice)
+        );
+        const wholesalePrice = pickFirstPrice(
+          parseOptionalPrice(centralProduct.wholesalePrice),
+          retailPrice
+        );
+        if (retailPrice === null && wholesalePrice === null) continue;
+
+        const pricePayload = { retailPrice, wholesalePrice };
+        const centralProductId = String(centralProduct?._id || "").trim();
+        if (centralProductId) {
+          centralPriceByProductId.set(centralProductId, pricePayload);
+        }
+
+        const centralBarcodeSet = normalizeBarcodeSet(
+          centralProduct.barcode,
+          centralProduct.barcodeAliases
+        );
+        const centralCodes = [
+          centralBarcodeSet.barcode,
+          ...centralBarcodeSet.barcodeAliases
+        ].filter(Boolean);
+        for (const code of centralCodes) {
+          if (!centralPriceByBarcode.has(code)) {
+            centralPriceByBarcode.set(code, pricePayload);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.warn("sync-central: product narxlarini olishda xatolik", error?.message || error);
+  }
 
   for (const transfer of pendingTransfers) {
     const transferId = String(transfer?._id || "").trim();
@@ -655,8 +735,34 @@ router.post("/sync-central", authMiddleware, async (req, res) => {
       const incomingCodes = [incomingBarcodeSet.barcode, ...incomingBarcodeSet.barcodeAliases].filter(Boolean);
       const unit = normalizeUnit(item.unit);
       const purchasePrice = Math.max(0, roundMoney(toNumber(item.purchasePrice, 0)));
-      const rawRetailPrice = Number(item.retailPrice);
-      const rawWholesalePrice = Number(item.wholesalePrice);
+      const transferRetailPrice = pickFirstPrice(
+        parseOptionalPrice(item.retailPrice),
+        parseOptionalPrice(item.sellPrice),
+        parseOptionalPrice(item.sellingPrice),
+        parseOptionalPrice(item.salePrice)
+      );
+      const transferWholesalePrice = parseOptionalPrice(item.wholesalePrice);
+      const itemProductId = String(item.productId || "").trim();
+      let centralPriceFallback = itemProductId
+        ? (centralPriceByProductId.get(itemProductId) || null)
+        : null;
+      if (!centralPriceFallback && incomingCodes.length) {
+        for (const code of incomingCodes) {
+          if (centralPriceByBarcode.has(code)) {
+            centralPriceFallback = centralPriceByBarcode.get(code);
+            break;
+          }
+        }
+      }
+      const resolvedRetailPrice = pickFirstPrice(
+        transferRetailPrice,
+        centralPriceFallback?.retailPrice ?? null
+      );
+      const resolvedWholesalePrice = pickFirstPrice(
+        transferWholesalePrice,
+        centralPriceFallback?.wholesalePrice ?? null,
+        resolvedRetailPrice
+      );
       const incomingTotal = roundMoney(incomingQuantity * purchasePrice);
 
       let product = null;
@@ -683,11 +789,11 @@ router.post("/sync-central", authMiddleware, async (req, res) => {
       const fallbackBarcode = incomingCodes[0] || `${transferNumber}-${transferItemCount + 1}-${Date.now()}`;
 
       if (!product) {
-        const retailPrice = Number.isFinite(rawRetailPrice)
-          ? Math.max(0, roundMoney(rawRetailPrice))
+        const retailPrice = resolvedRetailPrice !== null
+          ? resolvedRetailPrice
           : purchasePrice;
-        const wholesalePrice = Number.isFinite(rawWholesalePrice)
-          ? Math.max(0, roundMoney(rawWholesalePrice))
+        const wholesalePrice = resolvedWholesalePrice !== null
+          ? resolvedWholesalePrice
           : retailPrice;
 
         const createBarcode = incomingCodes[0] || fallbackBarcode;
@@ -742,11 +848,11 @@ router.post("/sync-central", authMiddleware, async (req, res) => {
         const oldCost = toNumber(product.purchasePrice, 0);
         const existingRetailPrice = Math.max(0, roundMoney(toNumber(product.retailPrice, purchasePrice)));
         const existingWholesalePrice = Math.max(0, roundMoney(toNumber(product.wholesalePrice, existingRetailPrice)));
-        const retailPrice = Number.isFinite(rawRetailPrice)
-          ? Math.max(0, roundMoney(rawRetailPrice))
+        const retailPrice = resolvedRetailPrice !== null
+          ? resolvedRetailPrice
           : existingRetailPrice;
-        const wholesalePrice = Number.isFinite(rawWholesalePrice)
-          ? Math.max(0, roundMoney(rawWholesalePrice))
+        const wholesalePrice = resolvedWholesalePrice !== null
+          ? resolvedWholesalePrice
           : existingWholesalePrice;
         const weightedPurchasePrice = newQty > 0
           ? roundMoney(((oldCost * oldQty) + incomingTotal) / newQty)

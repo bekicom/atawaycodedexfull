@@ -628,16 +628,7 @@ Write-Output \$preferredPrinter
                         child: TextField(
                           controller: quantityController,
                           keyboardType: TextInputType.number,
-                          readOnly: true,
-                          onTap: () async {
-                            await _openVirtualKeyboard(
-                              controller: quantityController,
-                              title: sellAsPiece
-                                  ? '${product.pieceUnit} soni'
-                                  : '${product.unit} soni',
-                              keyboardType: TextInputType.number,
-                            );
-                          },
+                          readOnly: false,
                           decoration: InputDecoration(
                             labelText: sellAsPiece
                                 ? '${product.pieceUnit} soni'
@@ -2386,7 +2377,6 @@ Write-Output \$preferredPrinter
           ? Map<String, dynamic>.from(rawSale)
           : <String, dynamic>{};
       AppSettingsRecord? settings;
-      _ReceiptSaleData? saleData;
       var printedReceipt = false;
       String? receiptError;
 
@@ -2395,10 +2385,6 @@ Write-Output \$preferredPrinter
           settings = await ref
               .read(settingsRepositoryProvider)
               .fetchSettings(session.token);
-          saleData = _ReceiptSaleData.fromMap(
-            sale,
-            fallbackCashierUsername: session.user.username,
-          );
           printedReceipt = await _printReceipt(
             settings: settings,
             cashierUsername: session.user.username,
@@ -2422,14 +2408,6 @@ Write-Output \$preferredPrinter
       });
       _broadcastCustomerDisplayState();
 
-      if (shouldPrintReceipt && mounted && saleData != null) {
-        try {
-          await _showReceiptPreviewDialog(settings: settings!, sale: saleData);
-        } catch (error) {
-          receiptError = error.toString();
-        }
-      }
-
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -2441,7 +2419,7 @@ Write-Output \$preferredPrinter
                           cashChange != null
                       ? 'Sotuv muvaffaqiyatli yakunlandi. Berilgan: ${_formatMoney(cashReceived)}  Qaytim: ${_formatMoney(cashChange)}'
                       : 'Sotuv muvaffaqiyatli yakunlandi')
-                : 'Sotuv saqlandi, lekin chek oynasida xato bor',
+                : 'Sotuv saqlandi, lekin chekni chop etishda xato bor',
           ),
           backgroundColor: receiptError == null
               ? const Color(0xFF1F8F55)
@@ -2648,14 +2626,28 @@ Write-Output \$preferredPrinter
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  'Smena yopildi',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.w900,
-                  ),
-                  textAlign: TextAlign.center,
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Smena yopildi',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.w900,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.of(dialogContext).pop(),
+                      icon: const Icon(
+                        Icons.close_rounded,
+                        color: Colors.white,
+                      ),
+                      tooltip: 'Yopish',
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 12),
                 Container(
@@ -3612,16 +3604,17 @@ Write-Output \$preferredPrinter
     });
 
     try {
-      final today = DateTime.now();
-      final todayLabel = DateFormat('yyyy-MM-dd').format(today);
+      final shiftId = _currentShift?.id.trim() ?? '';
       final results = await Future.wait<dynamic>([
         ref
             .read(salesRepositoryProvider)
             .fetchSales(
               token: session.token,
-              period: '',
-              from: todayLabel,
-              to: todayLabel,
+              period: 'all',
+              from: '',
+              to: '',
+              cashierUsername: shiftId.isEmpty ? session.user.username : '',
+              shiftId: shiftId,
             ),
         ref.read(settingsRepositoryProvider).fetchSettings(session.token),
       ]);
@@ -5159,295 +5152,6 @@ Write-Output \$preferredPrinter
     return printed;
   }
 
-  Future<void> _showReceiptPreviewDialog({
-    required AppSettingsRecord settings,
-    required _ReceiptSaleData sale,
-    String dialogTitle = 'Chek tayyor',
-  }) async {
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        final receipt = settings.receipt;
-        final fields = receipt.fields;
-        final isReturnReceipt = dialogTitle.toLowerCase().contains('vazvrat');
-        final localCreatedAt = sale.createdAt.toLocal();
-        final dateText = DateFormat('dd.MM.yyyy').format(localCreatedAt);
-        final timeText = DateFormat('HH:mm').format(localCreatedAt);
-        Uint8List? logoBytes;
-        final logoUrl = receipt.logoUrl.trim();
-        if (logoUrl.startsWith('data:image/')) {
-          final commaIndex = logoUrl.indexOf(',');
-          if (commaIndex != -1) {
-            logoBytes = base64Decode(logoUrl.substring(commaIndex + 1));
-          }
-        }
-        return Dialog(
-          backgroundColor: const Color(0xFF102245),
-          child: Container(
-            width: 420,
-            padding: const EdgeInsets.all(18),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  dialogTitle,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Container(
-                  width: 320,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 14,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: DefaultTextStyle(
-                    style: const TextStyle(
-                      color: Color(0xFF17284B),
-                      fontSize: 12,
-                      fontFamily: 'monospace',
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (fields.showLogo && receipt.logoUrl.isNotEmpty) ...[
-                          const SizedBox(height: 10),
-                          if (logoBytes != null)
-                            Image.memory(
-                              logoBytes,
-                              width: 300,
-                              height: 150,
-                              fit: BoxFit.contain,
-                            )
-                          else if (logoUrl.startsWith('http'))
-                            Image.network(
-                              logoUrl,
-                              width: 300,
-                              height: 150,
-                              fit: BoxFit.contain,
-                            )
-                          else
-                            Image.asset(
-                              'assets/branding/ataway_receipt_logo.png',
-                              width: 300,
-                              height: 150,
-                              fit: BoxFit.contain,
-                            ),
-                          const SizedBox(height: 12),
-                        ],
-                        const SizedBox(height: 10),
-                        if (isReturnReceipt)
-                          const Padding(
-                            padding: EdgeInsets.only(bottom: 6),
-                            child: Text(
-                              'Amal: Vazvrat',
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                        if (fields.showReceiptNumber)
-                          _receiptMetaRow('Chek raqami', sale.receiptNumber),
-                        if (fields.showDate) _receiptMetaRow('Sana', dateText),
-                        if (fields.showTime) _receiptMetaRow('Vaqt', timeText),
-                        if (fields.showType)
-                          _receiptMetaRow(
-                            'Amal',
-                            isReturnReceipt ? 'vazvrat' : 'sotuv',
-                          ),
-                        if (fields.showShift && sale.shiftNumber > 0)
-                          _receiptMetaRow('Smena', '${sale.shiftNumber}'),
-                        if (fields.showCashier)
-                          _receiptMetaRow('Kassir', sale.cashierUsername),
-                        if (fields.showPaymentType)
-                          _receiptMetaRow(
-                            'To\'lov',
-                            _paymentTypeLabel(sale.paymentType),
-                          ),
-                        if (sale.paymentDetails.isNotEmpty) ...[
-                          const SizedBox(height: 4),
-                          ...sale.paymentDetails.map(
-                            (detail) => Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(
-                                  detail.label,
-                                  style: const TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                                Text(
-                                  _formatMoney(detail.amount),
-                                  style: const TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 8),
-                        const Text(
-                          '----------------------------------------',
-                          textAlign: TextAlign.center,
-                        ),
-                        ...sale.items.asMap().entries.map(
-                          (entry) => Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 4),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                Text(
-                                  '${entry.key + 1}. ${entry.value.productName}',
-                                  style: const TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                                ),
-                                Text(
-                                  '[${entry.value.productCode}]',
-                                  style: const TextStyle(
-                                    fontSize: 9,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                                if (entry.value.variantLabel.isNotEmpty)
-                                  Text(
-                                    entry.value.variantLabel,
-                                    style: const TextStyle(
-                                      fontSize: 9,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Text(
-                                      '${_formatQty(entry.value.quantity)} x ${_formatMoney(entry.value.unitPrice)}',
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                    Text(
-                                      '= ${_formatMoney(entry.value.lineTotal)}',
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w800,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        const Text(
-                          '----------------------------------------',
-                          textAlign: TextAlign.center,
-                        ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text(
-                              'Jami summa',
-                              style: TextStyle(fontWeight: FontWeight.w900),
-                            ),
-                            Text(
-                              _formatMoney(sale.totalAmount),
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const Text(
-                          '----------------------------------------',
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 10),
-                        if (fields.showContactLine &&
-                            receipt.contactLine.isNotEmpty) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            receipt.contactLine,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ],
-                        if (fields.showLegalText &&
-                            receipt.legalText.trim().isNotEmpty) ...[
-                          const SizedBox(height: 6),
-                          Text(
-                            receipt.legalText.trim(),
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              fontSize: 9,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                        if (fields.showFooter)
-                          Text(
-                            receipt.footer.isEmpty
-                                ? 'XARIDINGIZ UCHUN RAHMAT'
-                                : receipt.footer,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w900,
-                            ),
-                          ),
-                        if (receipt.phoneNumber.trim().isNotEmpty) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            'Tel: ${receipt.phoneNumber}',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 8),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () => Navigator.of(dialogContext).pop(),
-                        child: const Text('Yopish'),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
   Future<void> _openCashDrawer({bool showSuccessMessage = true}) async {
     try {
       if (Platform.isWindows) {
@@ -6300,12 +6004,6 @@ Write-Output \$preferredPrinter
         if (dialogContext.mounted) {
           Navigator.of(dialogContext).pop();
         }
-
-        await _showReceiptPreviewDialog(
-          settings: settings,
-          sale: receiptData,
-          dialogTitle: 'Vazvrat cheki tayyor',
-        );
       } catch (error) {
         setModalState(() {
           isSubmitting = false;
@@ -8279,14 +7977,14 @@ class _VirtualKeyboardDialogState extends State<_VirtualKeyboardDialog> {
     ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
     ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
     ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'],
-    ['z', 'x', 'c', 'v', 'b', 'n', 'm', '-', '.'],
+    ['z', 'x', 'c', 'v', 'b', 'n', 'm', '-', '.', ':'],
   ];
 
   static const _numericRows = [
     ['1', '2', '3'],
     ['4', '5', '6'],
     ['7', '8', '9'],
-    ['0', '00', '.'],
+    ['0', '00', '.', ':'],
   ];
 
   @override
@@ -9286,8 +8984,9 @@ class _DailyShiftReport {
         grossDebt += sale.debtAmount;
       }
 
+      var saleReturnOps = 0;
       if (sale.returns.isNotEmpty) {
-        returnsCount += sale.returns.length;
+        saleReturnOps = sale.returns.length;
         for (final ret in sale.returns) {
           if (ret.paymentType == 'debt') {
             returnDebt += ret.totalAmount;
@@ -9295,13 +8994,19 @@ class _DailyShiftReport {
           }
         }
       } else if (sale.returnedAmount > 0.0001) {
-        returnsCount += 1;
+        saleReturnOps = 1;
       }
 
+      var saleReturnedLineCount = 0;
       for (final item in sale.items) {
         soldItems += item.quantity;
         returnedItems += item.returnedQuantity;
+        if (item.returnedQuantity > 0.0001 || item.returnedTotal > 0.0001) {
+          saleReturnedLineCount += 1;
+        }
       }
+
+      returnsCount += math.max(saleReturnOps, saleReturnedLineCount);
     }
 
     netDebt = math.max(0, grossDebt - returnDebt);
@@ -9773,26 +9478,6 @@ String _normalizeReceiptNumberFromMap(Map<String, dynamic> sale) {
   }
   final number = 1000 + hash;
   return number.toString().padLeft(4, '0');
-}
-
-Widget _receiptMetaRow(String label, String value) {
-  return Padding(
-    padding: const EdgeInsets.symmetric(vertical: 1),
-    child: Row(
-      children: [
-        Expanded(
-          child: Text(
-            '$label:',
-            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800),
-          ),
-        ),
-        Text(
-          value,
-          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700),
-        ),
-      ],
-    ),
-  );
 }
 
 class _CartLine {

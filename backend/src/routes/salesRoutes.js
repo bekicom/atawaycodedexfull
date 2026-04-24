@@ -5,6 +5,7 @@ import { CustomerPayment } from "../models/CustomerPayment.js";
 import { Master } from "../models/Master.js";
 import { Product } from "../models/Product.js";
 import { Sale } from "../models/Sale.js";
+import { Shift } from "../models/Shift.js";
 import { tenantFilter, withTenant } from "../tenant.js";
 
 const router = Router();
@@ -207,8 +208,8 @@ function buildDateRangeQuery({ period, from, to }) {
 router.get("/", authMiddleware, async (req, res) => {
   const limitRaw = Number(req.query?.limit);
   const limit = Number.isFinite(limitRaw) && limitRaw > 0
-    ? Math.min(Math.floor(limitRaw), 300)
-    : 100;
+    ? Math.min(Math.floor(limitRaw), 5000)
+    : 1000;
 
   const period = String(req.query?.period || "").toLowerCase();
   const from = String(req.query?.from || "");
@@ -224,7 +225,43 @@ router.get("/", authMiddleware, async (req, res) => {
     query.cashierUsername = cashierUsername;
   }
   if (shiftId) {
-    query.shiftId = shiftId;
+    const targetShift = await Shift.findOne(
+      tenantFilter(req, { _id: shiftId })
+    )
+      .select("_id cashierUsername openedAt closedAt")
+      .lean();
+    if (!targetShift) {
+      return res.json({ sales: [], summary: {
+        totalTransactions: 0,
+        totalSales: 0,
+        totalDebtPaymentCount: 0,
+        totalRevenue: 0,
+        totalDebtPayment: 0,
+        totalCollection: 0,
+        totalCash: 0,
+        totalCard: 0,
+        totalClick: 0,
+        totalProfit: 0,
+        totalExpense: 0
+      } });
+    }
+
+    const shiftStart = targetShift.openedAt ? new Date(targetShift.openedAt) : null;
+    const shiftEnd = targetShift.closedAt ? new Date(targetShift.closedAt) : new Date();
+    const legacyShiftMatch = {
+      $or: [{ shiftId: { $exists: false } }, { shiftId: null }],
+      cashierUsername: targetShift.cashierUsername
+    };
+    if (shiftStart || shiftEnd) {
+      legacyShiftMatch.createdAt = {};
+      if (shiftStart) legacyShiftMatch.createdAt.$gte = shiftStart;
+      if (shiftEnd) legacyShiftMatch.createdAt.$lte = shiftEnd;
+    }
+
+    query.$or = [
+      { shiftId: targetShift._id },
+      legacyShiftMatch
+    ];
   }
 
   const paymentQuery = tenantFilter(req);
@@ -507,6 +544,15 @@ router.post("/", authMiddleware, async (req, res) => {
     }
   }
 
+  const activeShift = await Shift.findOne(
+    tenantFilter(req, { cashierId: req.user.id, status: "open" })
+  )
+    .sort({ openedAt: -1 })
+    .lean();
+  if (!activeShift) {
+    return res.status(409).json({ message: "Avval smenani boshlang" });
+  }
+
   const applied = [];
   for (const item of saleItems) {
     const updated = await Product.updateOne(
@@ -526,6 +572,9 @@ router.post("/", authMiddleware, async (req, res) => {
   const sale = await Sale.create(withTenant(req, {
     cashierId: req.user.id,
     cashierUsername: req.user.username,
+    shiftId: activeShift._id,
+    shiftNumber: Number(activeShift.shiftNumber || 0),
+    shiftOpenedAt: activeShift.openedAt || null,
     items: saleItems,
     totalAmount,
     paymentType,
@@ -645,13 +694,9 @@ router.post("/:id/returns", authMiddleware, async (req, res) => {
     refundPayments = { cash: 0, card: 0, click: returnTotal };
   }
 
-  if (paymentType !== "debt") {
-    if (refundPayments.cash - availablePayments.cash > 0.01
-      || refundPayments.card - availablePayments.card > 0.01
-      || refundPayments.click - availablePayments.click > 0.01) {
-      return res.status(400).json({ message: "Tanlangan to'lov turida qaytarish uchun yetarli summa yo'q" });
-    }
-  }
+  // Qaytarish to'lov turi kassada amaliy holatga qarab tanlanadi.
+  // Shu sabab faqat sotuv qoldig'i va qaytarilayotgan miqdorni tekshiramiz,
+  // to'lov usuli bo'yicha original sale payments bilan cheklamaymiz.
 
   const updatedStock = [];
   for (const item of returnItems) {
