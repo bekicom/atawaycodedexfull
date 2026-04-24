@@ -151,10 +151,15 @@ export const createTransfer = asyncHandler(async (req, res) => {
       name: product.name,
       model: product.code,
       barcode: product.barcode,
+      barcodeAliases: Array.isArray(product.barcodeAliases)
+        ? product.barcodeAliases.filter((item) => String(item || "").trim() !== "")
+        : [],
       unit: product.unit,
       quantity: requestedQty,
       variants: item.variants,
       purchasePrice: Number(product.purchasePrice || 0),
+      retailPrice: Number(product.retailPrice || 0),
+      wholesalePrice: Number(product.wholesalePrice || 0),
       totalValue: itemTotalValue,
     });
   }

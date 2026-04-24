@@ -213,15 +213,26 @@ router.get("/", authMiddleware, async (req, res) => {
   const period = String(req.query?.period || "").toLowerCase();
   const from = String(req.query?.from || "");
   const to = String(req.query?.to || "");
+  const cashierUsername = String(req.query?.cashierUsername || "").trim();
+  const shiftId = String(req.query?.shiftId || "").trim();
   const query = tenantFilter(req, { entryType: { $ne: "opening_balance" } });
   const createdAtRange = buildDateRangeQuery({ period, from, to });
   if (createdAtRange) {
     query.createdAt = createdAtRange;
   }
+  if (cashierUsername) {
+    query.cashierUsername = cashierUsername;
+  }
+  if (shiftId) {
+    query.shiftId = shiftId;
+  }
 
   const paymentQuery = tenantFilter(req);
   if (createdAtRange) {
     paymentQuery.paidAt = createdAtRange;
+  }
+  if (cashierUsername) {
+    paymentQuery.cashierUsername = cashierUsername;
   }
 
   const [saleDocs, paymentDocs] = await Promise.all([

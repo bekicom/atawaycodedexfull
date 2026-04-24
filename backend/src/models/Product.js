@@ -6,6 +6,8 @@ const productSchema = new mongoose.Schema(
     tenantId: { type: mongoose.Schema.Types.ObjectId, ref: "Tenant", required: true, index: true },
     name: { type: String, required: true, trim: true },
     model: { type: String, required: true, trim: true },
+    barcode: { type: String, trim: true, default: "" },
+    barcodeAliases: { type: [String], default: [] },
     categoryId: { type: mongoose.Schema.Types.ObjectId, ref: "Category", required: true },
     supplierId: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", required: true },
     purchasePrice: { type: Number, required: true, min: 0 },
@@ -28,5 +30,20 @@ const productSchema = new mongoose.Schema(
 );
 
 productSchema.index({ tenantId: 1, categoryId: 1, name: 1, model: 1 }, { unique: true });
+productSchema.index(
+  { tenantId: 1, barcode: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { barcode: { $type: "string", $ne: "" } }
+  }
+);
+productSchema.index(
+  { tenantId: 1, barcodeAliases: 1 },
+  {
+    unique: true,
+    sparse: true,
+    partialFilterExpression: { barcodeAliases: { $exists: true, $type: "array", $ne: [] } }
+  }
+);
 
 export const Product = mongoose.model("Product", productSchema);

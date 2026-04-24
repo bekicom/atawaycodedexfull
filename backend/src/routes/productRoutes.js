@@ -5,6 +5,7 @@ import { Category } from "../models/Category.js";
 import { Supplier } from "../models/Supplier.js";
 import { Purchase } from "../models/Purchase.js";
 import { AppSettings } from "../models/AppSettings.js";
+import { SyncTransfer } from "../models/SyncTransfer.js";
 import { tenantFilter, withTenant } from "../tenant.js";
 
 const router = Router();
@@ -13,6 +14,36 @@ const PRICING_MODES = ["keep_old", "replace_all", "average"];
 
 function roundMoney(value) {
   return Math.round(Number(value) * 100) / 100;
+}
+
+function normalizeUnit(unit) {
+  const normalized = String(unit || "").trim().toLowerCase();
+  return PRODUCT_UNITS.includes(normalized) ? normalized : "dona";
+}
+
+function toNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function normalizeBarcode(value) {
+  return String(value || "").trim();
+}
+
+function normalizeBarcodeAliases(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => normalizeBarcode(item)).filter(Boolean))];
+}
+
+function normalizeBarcodeSet(primaryRaw, aliasesRaw) {
+  const allCodes = [
+    normalizeBarcode(primaryRaw),
+    ...normalizeBarcodeAliases(aliasesRaw)
+  ].filter(Boolean);
+  const uniqueCodes = [...new Set(allCodes)];
+  const barcode = uniqueCodes[0] || "";
+  const barcodeAliases = uniqueCodes.slice(1);
+  return { barcode, barcodeAliases };
 }
 
 async function getUsdRate(tenantId) {
@@ -46,6 +77,8 @@ function parsePayload(body, usdRate) {
   return {
     name: String(body?.name || "").trim(),
     model: String(body?.model || "").trim(),
+    barcode: normalizeBarcode(body?.barcode),
+    barcodeAliases: normalizeBarcodeAliases(body?.barcodeAliases),
     categoryId: String(body?.categoryId || "").trim(),
     supplierId: String(body?.supplierId || "").trim(),
     purchasePrice,
@@ -106,17 +139,55 @@ async function getOrCreateProductSettings(tenantId) {
   return settings;
 }
 
+async function findBarcodeConflict(req, codes, excludeId = null) {
+  const normalizedCodes = [...new Set((codes || []).map((item) => normalizeBarcode(item)).filter(Boolean))];
+  if (!normalizedCodes.length) return null;
+
+  const query = tenantFilter(req, {
+    $or: [
+      { barcode: { $in: normalizedCodes } },
+      { barcodeAliases: { $in: normalizedCodes } }
+    ]
+  });
+  if (excludeId) query._id = { $ne: excludeId };
+
+  return Product.findOne(query).select("_id name barcode barcodeAliases").lean();
+}
+
 router.get("/", authMiddleware, async (req, res) => {
   const query = tenantFilter(req);
   if (req.query.categoryId) {
     query.categoryId = req.query.categoryId;
   }
+  const search = String(req.query.q || "").trim();
+  if (search) {
+    const safe = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    query.$or = [
+      { barcode: search },
+      { barcodeAliases: search },
+      { name: { $regex: safe, $options: "i" } },
+      { model: { $regex: safe, $options: "i" } }
+    ];
+  }
 
-  const products = await Product.find(query)
+  let products = await Product.find(query)
     .populate({ path: "categoryId", select: "name" })
     .populate({ path: "supplierId", select: "name phone address" })
     .sort({ createdAt: -1 })
     .lean();
+
+  if (search) {
+    const exactMatches = products.filter((item) => {
+      const barcode = String(item?.barcode || "").trim();
+      const aliases = Array.isArray(item?.barcodeAliases)
+        ? item.barcodeAliases.map((alias) => String(alias || "").trim())
+        : [];
+      return barcode === search || aliases.includes(search);
+    });
+    if (exactMatches.length > 0) {
+      products = exactMatches;
+    }
+  }
   res.json({ products });
 });
 
@@ -179,6 +250,9 @@ router.put("/top", authMiddleware, async (req, res) => {
 router.post("/", authMiddleware, async (req, res) => {
   const usdRate = await getUsdRate(req.user.tenantId);
   const payload = parsePayload(req.body, usdRate);
+  const barcodeSet = normalizeBarcodeSet(payload.barcode, payload.barcodeAliases);
+  payload.barcode = barcodeSet.barcode;
+  payload.barcodeAliases = barcodeSet.barcodeAliases;
   const invalid = validatePayload(payload);
   if (invalid) return res.status(400).json({ message: invalid });
 
@@ -189,6 +263,13 @@ router.post("/", authMiddleware, async (req, res) => {
 
   const exists = await Product.exists(tenantFilter(req, { name: payload.name, model: payload.model, categoryId: payload.categoryId }));
   if (exists) return res.status(409).json({ message: "Bu mahsulot allaqachon mavjud" });
+  const barcodeConflict = await findBarcodeConflict(
+    req,
+    [payload.barcode, ...(payload.barcodeAliases || [])]
+  );
+  if (barcodeConflict) {
+    return res.status(409).json({ message: "Shtixkod boshqa mahsulotga biriktirilgan" });
+  }
 
   const product = await Product.create(withTenant(req, payload));
   await Purchase.create(withTenant(req, {
@@ -334,6 +415,9 @@ router.post("/:id/restock", authMiddleware, async (req, res) => {
 router.put("/:id", authMiddleware, async (req, res) => {
   const usdRate = await getUsdRate(req.user.tenantId);
   const payload = parsePayload(req.body, usdRate);
+  const barcodeSet = normalizeBarcodeSet(payload.barcode, payload.barcodeAliases);
+  payload.barcode = barcodeSet.barcode;
+  payload.barcodeAliases = barcodeSet.barcodeAliases;
   const invalid = validatePayload(payload);
   if (invalid) return res.status(400).json({ message: invalid });
 
@@ -344,6 +428,14 @@ router.put("/:id", authMiddleware, async (req, res) => {
 
   const duplicate = await Product.exists(tenantFilter(req, { name: payload.name, model: payload.model, categoryId: payload.categoryId, _id: { $ne: req.params.id } }));
   if (duplicate) return res.status(409).json({ message: "Bu mahsulot allaqachon mavjud" });
+  const barcodeConflict = await findBarcodeConflict(
+    req,
+    [payload.barcode, ...(payload.barcodeAliases || [])],
+    req.params.id
+  );
+  if (barcodeConflict) {
+    return res.status(409).json({ message: "Shtixkod boshqa mahsulotga biriktirilgan" });
+  }
 
   const existing = await Product.findOne(tenantFilter(req, { _id: req.params.id })).lean();
   if (!existing) return res.status(404).json({ message: "Mahsulot topilmadi" });
@@ -396,6 +488,348 @@ router.delete("/:id", authMiddleware, async (req, res) => {
   const deleted = await Product.findOneAndDelete(tenantFilter(req, { _id: req.params.id }));
   if (!deleted) return res.status(404).json({ message: "Mahsulot topilmadi" });
   res.json({ ok: true });
+});
+
+router.post("/sync-central", authMiddleware, async (req, res) => {
+  try {
+  const centralBaseUrl = String(process.env.CENTRAL_API_BASE_URL || "").trim();
+  const centralUsername = String(process.env.CENTRAL_SYNC_USERNAME || "").trim();
+  const centralPassword = String(process.env.CENTRAL_SYNC_PASSWORD || "").trim();
+  const storeCode = String(req.body?.storeCode || process.env.STORE_CODE || "").trim();
+  const storeName = String(req.body?.storeName || process.env.STORE_NAME || "").trim().toLowerCase();
+
+  if (!centralBaseUrl || !centralUsername || !centralPassword) {
+    return res.status(400).json({ message: "Markaziy sinxron sozlamalari to'liq emas" });
+  }
+  if (!storeCode && !storeName) {
+    return res.status(400).json({ message: "Do'kon kodi yoki nomi kiritilmagan" });
+  }
+
+  const headers = { "Content-Type": "application/json", Accept: "application/json" };
+  const loginResponse = await fetch(`${centralBaseUrl}/auth/login`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      username: centralUsername,
+      password: centralPassword
+    })
+  });
+
+  if (!loginResponse.ok) {
+    return res.status(502).json({ message: "Markaziy serverga login bo'lmadi" });
+  }
+
+  const loginPayload = await loginResponse.json();
+  const centralToken = String(loginPayload?.token || "").trim();
+  if (!centralToken) {
+    return res.status(502).json({ message: "Markaziy server token qaytarmadi" });
+  }
+
+  const transfersResponse = await fetch(`${centralBaseUrl}/transfers`, {
+    method: "GET",
+    headers: { ...headers, Authorization: `Bearer ${centralToken}` }
+  });
+
+  if (!transfersResponse.ok) {
+    return res.status(502).json({ message: "Markaziy transferlar olinmadi" });
+  }
+
+  const transfersPayload = await transfersResponse.json();
+  const transferList = Array.isArray(transfersPayload?.transfers)
+    ? transfersPayload.transfers
+    : [];
+
+  const matchedTransfers = transferList.filter((transfer) => {
+    const status = String(transfer?.status || "").trim().toLowerCase();
+    const transferCode = String(transfer?.storeCode || "").trim();
+    const transferName = String(transfer?.storeName || "").trim().toLowerCase();
+    if (status !== "sent") return false;
+    if (storeCode && transferCode === storeCode) return true;
+    if (storeName && transferName === storeName) return true;
+    return false;
+  });
+
+  if (!matchedTransfers.length) {
+    return res.json({
+      syncedTransfers: 0,
+      syncedProducts: 0,
+      skippedTransfers: 0,
+      message: "Sinxron uchun yangi transfer topilmadi"
+    });
+  }
+
+  const remoteIds = matchedTransfers
+    .map((item) => String(item?._id || "").trim())
+    .filter(Boolean);
+
+  const existingSynced = await SyncTransfer.find(
+    tenantFilter(req, { remoteTransferId: { $in: remoteIds } })
+  )
+    .select({ remoteTransferId: 1 })
+    .lean();
+
+  const syncedIds = new Set(
+    existingSynced.map((item) => String(item.remoteTransferId || "").trim()).filter(Boolean)
+  );
+
+  const pendingTransfers = [];
+  for (const transfer of matchedTransfers) {
+    const transferId = String(transfer?._id || "").trim();
+    if (!transferId) continue;
+
+    if (!syncedIds.has(transferId)) {
+      pendingTransfers.push(transfer);
+      continue;
+    }
+
+    const transferItems = Array.isArray(transfer?.items) ? transfer.items : [];
+    let needsResync = false;
+
+    for (const rawItem of transferItems) {
+      const item = rawItem || {};
+      const itemName = String(item.name || "Transfer mahsulot").trim() || "Transfer mahsulot";
+      const itemBarcodeSet = normalizeBarcodeSet(item.barcode, item.barcodeAliases);
+      const itemCodes = [itemBarcodeSet.barcode, ...itemBarcodeSet.barcodeAliases].filter(Boolean);
+      const itemModel = String(item.model || "-").trim() || "-";
+      const exists = await Product.exists(tenantFilter(req, {
+        $or: [
+          ...(itemCodes.length
+            ? [{ barcode: { $in: itemCodes } }, { barcodeAliases: { $in: itemCodes } }]
+            : []),
+          { name: itemName, model: itemModel }
+        ]
+      }));
+      if (!exists) {
+        needsResync = true;
+        break;
+      }
+    }
+
+    if (needsResync) {
+      pendingTransfers.push(transfer);
+    }
+  }
+
+  if (!pendingTransfers.length) {
+    return res.json({
+      syncedTransfers: 0,
+      syncedProducts: 0,
+      skippedTransfers: matchedTransfers.length,
+      message: "Barcha transferlar oldin sinxron qilingan"
+    });
+  }
+
+  const supplierName = "Sklad transfer";
+  const categoryName = "Sinxron kategoriya";
+
+  let supplier = await Supplier.findOne(tenantFilter(req, { name: supplierName }));
+  if (!supplier) {
+    supplier = await Supplier.create(
+      withTenant(req, { name: supplierName, address: "Sklad transfer", phone: "" })
+    );
+  }
+
+  let category = await Category.findOne(tenantFilter(req, { name: categoryName }));
+  if (!category) {
+    category = await Category.create(withTenant(req, { name: categoryName }));
+  }
+
+  let syncedTransfers = 0;
+  let syncedProducts = 0;
+
+  for (const transfer of pendingTransfers) {
+    const transferId = String(transfer?._id || "").trim();
+    const transferNumber = String(transfer?.transferNumber || transfer?.number || transferId).trim();
+    const transferItems = Array.isArray(transfer?.items) ? transfer.items : [];
+
+    let transferItemCount = 0;
+
+    for (const rawItem of transferItems) {
+      const item = rawItem || {};
+      const incomingQuantity = toNumber(item.quantity, 0);
+      if (incomingQuantity <= 0) continue;
+
+      const name = String(item.name || "Transfer mahsulot").trim() || "Transfer mahsulot";
+      const model = String(item.model || "-").trim() || "-";
+      const incomingBarcodeSet = normalizeBarcodeSet(item.barcode, item.barcodeAliases);
+      const incomingCodes = [incomingBarcodeSet.barcode, ...incomingBarcodeSet.barcodeAliases].filter(Boolean);
+      const unit = normalizeUnit(item.unit);
+      const purchasePrice = Math.max(0, roundMoney(toNumber(item.purchasePrice, 0)));
+      const rawRetailPrice = Number(item.retailPrice);
+      const rawWholesalePrice = Number(item.wholesalePrice);
+      const incomingTotal = roundMoney(incomingQuantity * purchasePrice);
+
+      let product = null;
+      if (incomingCodes.length) {
+        product = await Product.findOne(
+          tenantFilter(req, {
+            $or: [
+              { barcode: { $in: incomingCodes } },
+              { barcodeAliases: { $in: incomingCodes } }
+            ]
+          })
+        );
+      }
+      if (!product) {
+        product = await Product.findOne(
+          tenantFilter(req, {
+            name,
+            model,
+            categoryId: category._id
+          })
+        );
+      }
+
+      const fallbackBarcode = incomingCodes[0] || `${transferNumber}-${transferItemCount + 1}-${Date.now()}`;
+
+      if (!product) {
+        const retailPrice = Number.isFinite(rawRetailPrice)
+          ? Math.max(0, roundMoney(rawRetailPrice))
+          : purchasePrice;
+        const wholesalePrice = Number.isFinite(rawWholesalePrice)
+          ? Math.max(0, roundMoney(rawWholesalePrice))
+          : retailPrice;
+
+        const createBarcode = incomingCodes[0] || fallbackBarcode;
+        const createAliases = incomingCodes.filter((code) => code !== createBarcode);
+        const createConflict = await findBarcodeConflict(req, [createBarcode, ...createAliases]);
+        const safeBarcode = createConflict ? fallbackBarcode : createBarcode;
+        const safeAliases = createConflict ? [] : createAliases;
+        product = await Product.create(
+          withTenant(req, {
+            name,
+            model,
+            barcode: safeBarcode,
+            barcodeAliases: safeAliases,
+            categoryId: category._id,
+            supplierId: supplier._id,
+            purchasePrice,
+            priceCurrency: "uzs",
+            usdRateUsed: 12171,
+            totalPurchaseCost: incomingTotal,
+            retailPrice,
+            wholesalePrice,
+            paymentType: "naqd",
+            paidAmount: incomingTotal,
+            debtAmount: 0,
+            quantity: incomingQuantity,
+            unit
+          })
+        );
+
+        await Purchase.create(
+          withTenant(req, {
+            entryType: "initial",
+            supplierId: supplier._id,
+            productId: product._id,
+            productName: product.name,
+            productModel: product.model,
+            quantity: incomingQuantity,
+            unit: product.unit,
+            purchasePrice,
+            priceCurrency: "uzs",
+            usdRateUsed: 12171,
+            totalCost: incomingTotal,
+            paidAmount: incomingTotal,
+            debtAmount: 0,
+            paymentType: "naqd",
+            pricingMode: "replace_all"
+          })
+        );
+      } else {
+        const oldQty = toNumber(product.quantity, 0);
+        const newQty = roundMoney(oldQty + incomingQuantity);
+        const oldCost = toNumber(product.purchasePrice, 0);
+        const existingRetailPrice = Math.max(0, roundMoney(toNumber(product.retailPrice, purchasePrice)));
+        const existingWholesalePrice = Math.max(0, roundMoney(toNumber(product.wholesalePrice, existingRetailPrice)));
+        const retailPrice = Number.isFinite(rawRetailPrice)
+          ? Math.max(0, roundMoney(rawRetailPrice))
+          : existingRetailPrice;
+        const wholesalePrice = Number.isFinite(rawWholesalePrice)
+          ? Math.max(0, roundMoney(rawWholesalePrice))
+          : existingWholesalePrice;
+        const weightedPurchasePrice = newQty > 0
+          ? roundMoney(((oldCost * oldQty) + incomingTotal) / newQty)
+          : purchasePrice;
+
+        product.quantity = newQty;
+        product.purchasePrice = weightedPurchasePrice;
+        product.totalPurchaseCost = incomingTotal;
+        product.retailPrice = retailPrice;
+        product.wholesalePrice = wholesalePrice;
+        product.paymentType = "naqd";
+        product.paidAmount = incomingTotal;
+        product.debtAmount = 0;
+        product.supplierId = supplier._id;
+        product.unit = unit;
+
+        const mergedCodes = [...new Set([
+          ...incomingCodes,
+          normalizeBarcode(product.barcode),
+          ...normalizeBarcodeAliases(product.barcodeAliases)
+        ].filter(Boolean))];
+        const primaryBarcode = normalizeBarcode(product.barcode) || mergedCodes[0] || fallbackBarcode;
+        const nextAliases = mergedCodes.filter((code) => code !== primaryBarcode);
+        const updateConflict = await findBarcodeConflict(req, [primaryBarcode, ...nextAliases], String(product._id));
+        if (!updateConflict) {
+          product.barcode = primaryBarcode;
+          product.barcodeAliases = nextAliases;
+        }
+
+        await product.save();
+
+        await Purchase.create(
+          withTenant(req, {
+            entryType: "restock",
+            supplierId: supplier._id,
+            productId: product._id,
+            productName: product.name,
+            productModel: product.model,
+            quantity: incomingQuantity,
+            unit: product.unit,
+            purchasePrice,
+            priceCurrency: "uzs",
+            usdRateUsed: 12171,
+            totalCost: incomingTotal,
+            paidAmount: incomingTotal,
+            debtAmount: 0,
+            paymentType: "naqd",
+            pricingMode: "replace_all"
+          })
+        );
+      }
+
+      transferItemCount += 1;
+      syncedProducts += 1;
+    }
+
+    try {
+      await SyncTransfer.create(
+        withTenant(req, {
+          remoteTransferId: transferId,
+          remoteTransferNumber: transferNumber,
+          storeCode: String(transfer?.storeCode || storeCode || "").trim(),
+          syncedAt: new Date(),
+          itemCount: transferItemCount
+        })
+      );
+    } catch (error) {
+      if (error?.code !== 11000) throw error;
+    }
+
+    syncedTransfers += 1;
+  }
+
+  return res.json({
+    syncedTransfers,
+    syncedProducts,
+    skippedTransfers: matchedTransfers.length - pendingTransfers.length,
+    message: `${syncedTransfers} ta transfer sinxron qilindi`
+  });
+  } catch (error) {
+    console.error("sync-central error:", error);
+    return res.status(500).json({ message: "Sinxron xatoligi", detail: error?.message || "" });
+  }
 });
 
 export default router;

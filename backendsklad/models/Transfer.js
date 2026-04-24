@@ -23,6 +23,8 @@ const transferItemSchema = new mongoose.Schema(
     quantity: { type: Number, required: true, min: 1 },
     variants: { type: [transferVariantSchema], default: [] },
     purchasePrice: { type: Number, required: true, min: 0, default: 0 },
+    retailPrice: { type: Number, required: true, min: 0, default: 0 },
+    wholesalePrice: { type: Number, required: true, min: 0, default: 0 },
     totalValue: { type: Number, required: true, min: 0, default: 0 },
   },
   { _id: false },
