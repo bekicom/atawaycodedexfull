@@ -54,6 +54,7 @@ export const listTransfers = asyncHandler(async (req, res) => {
       { storeName: { $regex: q, $options: "i" } },
       { "items.name": { $regex: q, $options: "i" } },
       { "items.barcode": { $regex: q, $options: "i" } },
+      { "items.barcodeAliases": { $regex: q, $options: "i" } },
     ];
   }
 

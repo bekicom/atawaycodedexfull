@@ -5,6 +5,7 @@ import { CustomerPayment } from "../models/CustomerPayment.js";
 import { Master } from "../models/Master.js";
 import { Product } from "../models/Product.js";
 import { Sale } from "../models/Sale.js";
+import { Shift } from "../models/Shift.js";
 import { tenantFilter, withTenant } from "../tenant.js";
 
 const router = Router();
@@ -162,7 +163,91 @@ function allocateByAvailability(total, available) {
   return out;
 }
 
+function buildShiftSalesQuery(req, shiftDoc) {
+  const query = tenantFilter(req, {
+    entryType: { $ne: "opening_balance" }
+  });
+
+  const shiftId = shiftDoc?._id || null;
+  const shiftStart = shiftDoc?.openedAt ? new Date(shiftDoc.openedAt) : null;
+  const shiftEnd = shiftDoc?.closedAt ? new Date(shiftDoc.closedAt) : new Date();
+  const legacyClause = {
+    $or: [{ shiftId: { $exists: false } }, { shiftId: null }],
+    cashierUsername: shiftDoc?.cashierUsername || req.user.username
+  };
+
+  if (shiftStart || shiftEnd) {
+    legacyClause.createdAt = {};
+    if (shiftStart) legacyClause.createdAt.$gte = shiftStart;
+    if (shiftEnd) legacyClause.createdAt.$lte = shiftEnd;
+  }
+
+  query.$or = [{ shiftId }, legacyClause];
+  return query;
+}
+
+async function getShiftAvailableCash(req, shiftDoc) {
+  if (!shiftDoc) return 0;
+  const sales = await Sale.find(buildShiftSalesQuery(req, shiftDoc))
+    .select({ payments: 1 })
+    .lean();
+
+  const grossCash = sales.reduce((sum, sale) => sum + Number(sale?.payments?.cash || 0), 0);
+  const returned = await summarizeReturns({
+    req,
+    shiftId: String(shiftDoc._id || ""),
+    targetShift: shiftDoc
+  });
+  const available = grossCash - Number(returned.totalCash || 0);
+
+  return roundMoney(Math.max(0, available));
+}
+
+async function getCashierAvailableCashToday(req, cashierUsername = "") {
+  const username = String(cashierUsername || req.user?.username || "").trim();
+  if (!username) return 0;
+
+  const createdAtRange = buildDateRangeQuery({ period: "today" });
+  const salesQuery = tenantFilter(req, {
+    entryType: { $ne: "opening_balance" },
+    cashierUsername: username
+  });
+  if (createdAtRange) {
+    salesQuery.createdAt = createdAtRange;
+  }
+
+  const sales = await Sale.find(salesQuery)
+    .select({ payments: 1 })
+    .lean();
+
+  const grossCash = sales.reduce((sum, sale) => sum + Number(sale?.payments?.cash || 0), 0);
+  const returned = await summarizeReturns({
+    req,
+    cashierUsername: username,
+    createdAtRange
+  });
+  const available = grossCash - Number(returned.totalCash || 0);
+
+  return roundMoney(Math.max(0, available));
+}
+
 function buildDateRangeQuery({ period, from, to }) {
+  const parseLocalDateOnly = (value) => {
+    if (!value) return null;
+    const raw = String(value).trim();
+    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (match) {
+      const year = Number(match[1]);
+      const month = Number(match[2]);
+      const day = Number(match[3]);
+      const parsed = new Date(year, month - 1, day, 0, 0, 0, 0);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
   const query = {};
   const now = new Date();
 
@@ -188,12 +273,12 @@ function buildDateRangeQuery({ period, from, to }) {
     query.$gte = start;
   } else if (from || to) {
     if (from) {
-      const start = new Date(from);
-      if (!Number.isNaN(start.getTime())) query.$gte = start;
+      const start = parseLocalDateOnly(from);
+      if (start) query.$gte = start;
     }
     if (to) {
-      const end = new Date(to);
-      if (!Number.isNaN(end.getTime())) {
+      const end = parseLocalDateOnly(to);
+      if (end) {
         end.setHours(23, 59, 59, 999);
         query.$lte = end;
       }
@@ -204,27 +289,174 @@ function buildDateRangeQuery({ period, from, to }) {
   return query;
 }
 
+function buildReturnMatchQuery({
+  req,
+  createdAtRange = null,
+  cashierUsername = "",
+  shiftId = "",
+  targetShift = null
+}) {
+  const match = tenantFilter(req, { returns: { $exists: true, $ne: [] } });
+  if (createdAtRange) {
+    match["returns.createdAt"] = createdAtRange;
+  }
+  if (cashierUsername) {
+    match["returns.cashierUsername"] = cashierUsername;
+  }
+
+  if (shiftId && targetShift) {
+    const shiftStart = targetShift.openedAt ? new Date(targetShift.openedAt) : null;
+    const shiftEnd = targetShift.closedAt ? new Date(targetShift.closedAt) : new Date();
+    const legacyReturnClause = {
+      "returns.shiftId": { $in: [null, undefined] },
+      "returns.cashierUsername": targetShift.cashierUsername
+    };
+    if (shiftStart || shiftEnd) {
+      legacyReturnClause["returns.createdAt"] = {};
+      if (shiftStart) legacyReturnClause["returns.createdAt"].$gte = shiftStart;
+      if (shiftEnd) legacyReturnClause["returns.createdAt"].$lte = shiftEnd;
+    }
+    match.$or = [
+      { "returns.shiftId": targetShift._id },
+      legacyReturnClause
+    ];
+  }
+
+  return match;
+}
+
+async function summarizeReturns({
+  req,
+  createdAtRange = null,
+  cashierUsername = "",
+  shiftId = "",
+  targetShift = null
+}) {
+  const match = buildReturnMatchQuery({
+    req,
+    createdAtRange,
+    cashierUsername,
+    shiftId,
+    targetShift
+  });
+
+  const rows = await Sale.aggregate([
+    { $match: match },
+    { $unwind: "$returns" },
+    ...(createdAtRange ? [{ $match: { "returns.createdAt": createdAtRange } }] : []),
+    ...(cashierUsername ? [{ $match: { "returns.cashierUsername": cashierUsername } }] : []),
+    ...(shiftId && targetShift
+      ? [{
+          $match: {
+            $or: [
+              { "returns.shiftId": targetShift._id },
+              {
+                "returns.shiftId": { $in: [null, undefined] },
+                "returns.cashierUsername": targetShift.cashierUsername,
+                ...(targetShift.openedAt || targetShift.closedAt
+                  ? {
+                      "returns.createdAt": {
+                        ...(targetShift.openedAt ? { $gte: new Date(targetShift.openedAt) } : {}),
+                        ...(targetShift.closedAt
+                          ? { $lte: new Date(targetShift.closedAt) }
+                          : { $lte: new Date() })
+                      }
+                    }
+                  : {})
+              }
+            ]
+          }
+        }]
+      : []),
+    {
+      $group: {
+        _id: null,
+        totalAmount: { $sum: { $ifNull: ["$returns.totalAmount", 0] } },
+        totalCash: { $sum: { $ifNull: ["$returns.payments.cash", 0] } },
+        totalCard: { $sum: { $ifNull: ["$returns.payments.card", 0] } },
+        totalClick: { $sum: { $ifNull: ["$returns.payments.click", 0] } }
+      }
+    }
+  ]);
+
+  const item = rows[0] || {};
+  return {
+    totalAmount: roundMoney(Number(item.totalAmount || 0)),
+    totalCash: roundMoney(Number(item.totalCash || 0)),
+    totalCard: roundMoney(Number(item.totalCard || 0)),
+    totalClick: roundMoney(Number(item.totalClick || 0))
+  };
+}
+
 router.get("/", authMiddleware, async (req, res) => {
   const limitRaw = Number(req.query?.limit);
   const limit = Number.isFinite(limitRaw) && limitRaw > 0
-    ? Math.min(Math.floor(limitRaw), 300)
-    : 100;
+    ? Math.min(Math.floor(limitRaw), 5000)
+    : 1000;
 
   const period = String(req.query?.period || "").toLowerCase();
   const from = String(req.query?.from || "");
   const to = String(req.query?.to || "");
+  const cashierUsername = String(req.query?.cashierUsername || "").trim();
+  const shiftId = String(req.query?.shiftId || "").trim();
+  let targetShift = null;
   const query = tenantFilter(req, { entryType: { $ne: "opening_balance" } });
   const createdAtRange = buildDateRangeQuery({ period, from, to });
   if (createdAtRange) {
     query.createdAt = createdAtRange;
+  }
+  if (cashierUsername) {
+    query.cashierUsername = cashierUsername;
+  }
+  if (shiftId) {
+    targetShift = await Shift.findOne(
+      tenantFilter(req, { _id: shiftId })
+    )
+      .select("_id cashierUsername openedAt closedAt")
+      .lean();
+    if (!targetShift) {
+      return res.json({ sales: [], summary: {
+        totalTransactions: 0,
+        totalSales: 0,
+        totalDebtPaymentCount: 0,
+        totalRevenue: 0,
+        totalDebtPayment: 0,
+        totalCollection: 0,
+        totalCash: 0,
+        totalCard: 0,
+        totalClick: 0,
+        totalProfit: 0,
+        totalExpense: 0
+      } });
+    }
+
+    const shiftStart = targetShift.openedAt ? new Date(targetShift.openedAt) : null;
+    const shiftEnd = targetShift.closedAt ? new Date(targetShift.closedAt) : new Date();
+    const legacyShiftMatch = {
+      $or: [{ shiftId: { $exists: false } }, { shiftId: null }],
+      cashierUsername: targetShift.cashierUsername
+    };
+    if (shiftStart || shiftEnd) {
+      legacyShiftMatch.createdAt = {};
+      if (shiftStart) legacyShiftMatch.createdAt.$gte = shiftStart;
+      if (shiftEnd) legacyShiftMatch.createdAt.$lte = shiftEnd;
+    }
+
+    query.$or = [
+      { shiftId: targetShift._id },
+      legacyShiftMatch
+    ];
   }
 
   const paymentQuery = tenantFilter(req);
   if (createdAtRange) {
     paymentQuery.paidAt = createdAtRange;
   }
+  if (cashierUsername) {
+    paymentQuery.cashierUsername = cashierUsername;
+  }
 
-  const [saleDocs, paymentDocs] = await Promise.all([
+  const [saleDocs, paymentDocs, returnSummary] = await Promise.all([
     Sale.find(query)
       .sort({ createdAt: -1 })
       .limit(limit)
@@ -233,7 +465,14 @@ router.get("/", authMiddleware, async (req, res) => {
       .populate("customerId", "fullName phone")
       .sort({ paidAt: -1 })
       .limit(limit)
-      .lean()
+      .lean(),
+    summarizeReturns({
+      req,
+      createdAtRange,
+      cashierUsername,
+      shiftId,
+      targetShift
+    })
   ]);
 
   const saleEntries = saleDocs.map((sale) => ({
@@ -269,6 +508,7 @@ router.get("/", authMiddleware, async (req, res) => {
   const summary = sales.reduce((acc, sale) => {
     const txType = String(sale.transactionType || "sale");
     const total = Number(sale.totalAmount || 0);
+    const returnedAmount = Number(sale.returnedAmount || 0);
     const cash = Number(sale.payments?.cash || 0);
     const card = Number(sale.payments?.card || 0);
     const click = Number(sale.payments?.click || 0);
@@ -285,7 +525,9 @@ router.get("/", authMiddleware, async (req, res) => {
       totalTransactions: acc.totalTransactions + 1,
       totalSales: acc.totalSales + (txType === "debt_payment" ? 0 : 1),
       totalDebtPaymentCount: acc.totalDebtPaymentCount + (txType === "debt_payment" ? 1 : 0),
-      totalRevenue: roundMoney(acc.totalRevenue + (txType === "debt_payment" ? 0 : total)),
+      totalRevenue: roundMoney(
+        acc.totalRevenue + (txType === "debt_payment" ? 0 : (total + returnedAmount))
+      ),
       totalDebtPayment: roundMoney(acc.totalDebtPayment + (txType === "debt_payment" ? total : 0)),
       totalCollection: roundMoney(acc.totalCollection + cash + card + click),
       totalCash: roundMoney(acc.totalCash + cash),
@@ -307,6 +549,15 @@ router.get("/", authMiddleware, async (req, res) => {
     totalProfit: 0,
     totalExpense: 0
   });
+
+  summary.totalRevenue = roundMoney(Math.max(0, summary.totalRevenue - returnSummary.totalAmount));
+  summary.totalCollection = roundMoney(Math.max(
+    0,
+    summary.totalCollection - returnSummary.totalCash - returnSummary.totalCard - returnSummary.totalClick
+  ));
+  summary.totalCash = roundMoney(Math.max(0, summary.totalCash - returnSummary.totalCash));
+  summary.totalCard = roundMoney(Math.max(0, summary.totalCard - returnSummary.totalCard));
+  summary.totalClick = roundMoney(Math.max(0, summary.totalClick - returnSummary.totalClick));
 
   return res.json({ sales, summary });
 });
@@ -496,6 +747,15 @@ router.post("/", authMiddleware, async (req, res) => {
     }
   }
 
+  const activeShift = await Shift.findOne(
+    tenantFilter(req, { cashierId: req.user.id, status: "open" })
+  )
+    .sort({ openedAt: -1 })
+    .lean();
+  if (!activeShift) {
+    return res.status(409).json({ message: "Avval smenani boshlang" });
+  }
+
   const applied = [];
   for (const item of saleItems) {
     const updated = await Product.updateOne(
@@ -515,6 +775,9 @@ router.post("/", authMiddleware, async (req, res) => {
   const sale = await Sale.create(withTenant(req, {
     cashierId: req.user.id,
     cashierUsername: req.user.username,
+    shiftId: activeShift._id,
+    shiftNumber: Number(activeShift.shiftNumber || 0),
+    shiftOpenedAt: activeShift.openedAt || null,
     items: saleItems,
     totalAmount,
     paymentType,
@@ -565,6 +828,14 @@ router.post("/:id/returns", authMiddleware, async (req, res) => {
   const requestedType = String(req.body?.paymentType || "").trim().toLowerCase();
   const fallbackType = sale.paymentType === "mixed" ? "mixed" : sale.paymentType;
   const paymentType = PAYMENT_TYPES.includes(requestedType) ? requestedType : fallbackType;
+  const activeShift = await Shift.findOne(
+    tenantFilter(req, { cashierId: req.user.id, status: "open" })
+  )
+    .sort({ openedAt: -1 })
+    .lean();
+  if (!activeShift) {
+    return res.status(409).json({ message: "Vazvrat uchun ochiq smena kerak" });
+  }
 
   const returnItems = [];
   for (const item of items) {
@@ -634,13 +905,21 @@ router.post("/:id/returns", authMiddleware, async (req, res) => {
     refundPayments = { cash: 0, card: 0, click: returnTotal };
   }
 
-  if (paymentType !== "debt") {
-    if (refundPayments.cash - availablePayments.cash > 0.01
-      || refundPayments.card - availablePayments.card > 0.01
-      || refundPayments.click - availablePayments.click > 0.01) {
-      return res.status(400).json({ message: "Tanlangan to'lov turida qaytarish uchun yetarli summa yo'q" });
+  if (refundPayments.cash > 0.0001) {
+    const availableCash = await getCashierAvailableCashToday(
+      req,
+      activeShift.cashierUsername || req.user.username
+    );
+    if (refundPayments.cash - availableCash > 0.01) {
+      return res.status(400).json({
+        message: `Kassada naqd yetarli emas. Mavjud: ${availableCash}, kerak: ${refundPayments.cash}`
+      });
     }
   }
+
+  // Qaytarish to'lov turi kassada amaliy holatga qarab tanlanadi.
+  // Shu sabab faqat sotuv qoldig'i va qaytarilayotgan miqdorni tekshiramiz,
+  // to'lov usuli bo'yicha original sale payments bilan cheklamaymiz.
 
   const updatedStock = [];
   for (const item of returnItems) {
@@ -666,10 +945,6 @@ router.post("/:id/returns", authMiddleware, async (req, res) => {
   }
 
   sale.totalAmount = roundMoney(Math.max(0, Number(sale.totalAmount || 0) - returnTotal));
-  sale.payments.cash = roundMoney(Math.max(0, Number(sale.payments?.cash || 0) - refundPayments.cash));
-  sale.payments.card = roundMoney(Math.max(0, Number(sale.payments?.card || 0) - refundPayments.card));
-  sale.payments.click = roundMoney(Math.max(0, Number(sale.payments?.click || 0) - refundPayments.click));
-
   if (sale.customerId) {
     const customer = await Customer.findOne(tenantFilter(req, { _id: sale.customerId }));
     if (customer) {
@@ -710,6 +985,9 @@ router.post("/:id/returns", authMiddleware, async (req, res) => {
     tenantId: req.user.tenantId,
     cashierId: req.user.id,
     cashierUsername: req.user.username,
+    shiftId: activeShift._id,
+    shiftNumber: Number(activeShift.shiftNumber || 0),
+    shiftOpenedAt: activeShift.openedAt || null,
     paymentType,
     payments: refundPayments,
     totalAmount: returnTotal,

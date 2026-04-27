@@ -11,6 +11,22 @@ function roundMoney(value) {
 }
 
 function buildDateRangeQuery({ period, from, to }) {
+  const parseLocalDateOnly = (value) => {
+    if (!value) return null;
+    const raw = String(value).trim();
+    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (match) {
+      const year = Number(match[1]);
+      const month = Number(match[2]);
+      const day = Number(match[3]);
+      const parsed = new Date(year, month - 1, day, 0, 0, 0, 0);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
   const query = {};
   const now = new Date();
 
@@ -36,12 +52,12 @@ function buildDateRangeQuery({ period, from, to }) {
     query.$gte = start;
   } else if (from || to) {
     if (from) {
-      const start = new Date(from);
-      if (!Number.isNaN(start.getTime())) query.$gte = start;
+      const start = parseLocalDateOnly(from);
+      if (start) query.$gte = start;
     }
     if (to) {
-      const end = new Date(to);
-      if (!Number.isNaN(end.getTime())) {
+      const end = parseLocalDateOnly(to);
+      if (end) {
         end.setHours(23, 59, 59, 999);
         query.$lte = end;
       }
@@ -52,16 +68,93 @@ function buildDateRangeQuery({ period, from, to }) {
   return query;
 }
 
-async function summarizeShift(req, shiftId) {
-  const sales = await Sale.find(
-    tenantFilter(req, {
-      shiftId,
-      entryType: { $ne: "opening_balance" },
-      transactionType: { $ne: "debt_payment" }
-    })
-  ).lean();
+function buildShiftSalesQuery(req, shiftId, shiftDoc = null) {
+  const query = tenantFilter(req, {
+    entryType: { $ne: "opening_balance" },
+    transactionType: { $ne: "debt_payment" }
+  });
 
-  return sales.reduce(
+  if (!shiftDoc) {
+    query.shiftId = shiftId;
+    return query;
+  }
+
+  const shiftStart = shiftDoc.openedAt ? new Date(shiftDoc.openedAt) : null;
+  const shiftEnd = shiftDoc.closedAt ? new Date(shiftDoc.closedAt) : new Date();
+  const legacyClause = {
+    $or: [{ shiftId: { $exists: false } }, { shiftId: null }],
+    cashierUsername: shiftDoc.cashierUsername
+  };
+  if (shiftStart || shiftEnd) {
+    legacyClause.createdAt = {};
+    if (shiftStart) legacyClause.createdAt.$gte = shiftStart;
+    if (shiftEnd) legacyClause.createdAt.$lte = shiftEnd;
+  }
+
+  query.$or = [{ shiftId }, legacyClause];
+  return query;
+}
+
+async function summarizeShift(req, shiftId, shiftDoc = null) {
+  const sales = await Sale.find(buildShiftSalesQuery(req, shiftId, shiftDoc)).lean();
+  const shift = shiftDoc || await Shift.findOne(tenantFilter(req, { _id: shiftId }))
+    .select("_id cashierUsername openedAt closedAt")
+    .lean();
+
+  let returnSummary = {
+    totalAmount: 0,
+    totalCash: 0,
+    totalCard: 0,
+    totalClick: 0
+  };
+
+  if (shift) {
+    const shiftStart = shift.openedAt ? new Date(shift.openedAt) : null;
+    const shiftEnd = shift.closedAt ? new Date(shift.closedAt) : new Date();
+    const matchReturn = tenantFilter(req, { returns: { $exists: true, $ne: [] } });
+
+    const rows = await Sale.aggregate([
+      { $match: matchReturn },
+      { $unwind: "$returns" },
+      {
+        $match: {
+          $or: [
+            { "returns.shiftId": shift._id },
+            {
+              "returns.shiftId": { $in: [null, undefined] },
+              "returns.cashierUsername": shift.cashierUsername,
+              ...(shiftStart || shiftEnd
+                ? {
+                    "returns.createdAt": {
+                      ...(shiftStart ? { $gte: shiftStart } : {}),
+                      ...(shiftEnd ? { $lte: shiftEnd } : {})
+                    }
+                  }
+                : {})
+            }
+          ]
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: { $ifNull: ["$returns.totalAmount", 0] } },
+          totalCash: { $sum: { $ifNull: ["$returns.payments.cash", 0] } },
+          totalCard: { $sum: { $ifNull: ["$returns.payments.card", 0] } },
+          totalClick: { $sum: { $ifNull: ["$returns.payments.click", 0] } }
+        }
+      }
+    ]);
+    const agg = rows[0] || {};
+    returnSummary = {
+      totalAmount: roundMoney(Number(agg.totalAmount || 0)),
+      totalCash: roundMoney(Number(agg.totalCash || 0)),
+      totalCard: roundMoney(Number(agg.totalCard || 0)),
+      totalClick: roundMoney(Number(agg.totalClick || 0))
+    };
+  }
+
+  const gross = sales.reduce(
     (acc, sale) => {
       const itemCount = (sale.items || []).reduce(
         (sum, item) => sum + Number(item.quantity || 0),
@@ -70,7 +163,9 @@ async function summarizeShift(req, shiftId) {
       return {
         totalSalesCount: acc.totalSalesCount + 1,
         totalItemsCount: roundMoney(acc.totalItemsCount + itemCount),
-        totalAmount: roundMoney(acc.totalAmount + Number(sale.totalAmount || 0)),
+        totalAmount: roundMoney(
+          acc.totalAmount + Number(sale.totalAmount || 0) + Number(sale.returnedAmount || 0)
+        ),
         totalCash: roundMoney(acc.totalCash + Number(sale.payments?.cash || 0)),
         totalCard: roundMoney(acc.totalCard + Number(sale.payments?.card || 0)),
         totalClick: roundMoney(acc.totalClick + Number(sale.payments?.click || 0)),
@@ -91,6 +186,14 @@ async function summarizeShift(req, shiftId) {
       lastSaleAt: null
     }
   );
+
+  return {
+    ...gross,
+    totalAmount: roundMoney(Math.max(0, gross.totalAmount - returnSummary.totalAmount)),
+    totalCash: roundMoney(Math.max(0, gross.totalCash - returnSummary.totalCash)),
+    totalCard: roundMoney(Math.max(0, gross.totalCard - returnSummary.totalCard)),
+    totalClick: roundMoney(Math.max(0, gross.totalClick - returnSummary.totalClick))
+  };
 }
 
 router.get("/current", authMiddleware, async (req, res) => {
@@ -135,7 +238,7 @@ router.post("/current/close", authMiddleware, async (req, res) => {
     return res.status(404).json({ message: "Ochiq smena topilmadi" });
   }
 
-  const summary = await summarizeShift(req, shift._id);
+  const summary = await summarizeShift(req, shift._id, shift);
   shift.status = "closed";
   shift.closedAt = new Date();
   shift.totalSalesCount = summary.totalSalesCount;
@@ -159,8 +262,8 @@ router.get("/", authMiddleware, async (req, res) => {
   const status = String(req.query?.status || "").trim().toLowerCase();
   const limitRaw = Number(req.query?.limit);
   const limit = Number.isFinite(limitRaw) && limitRaw > 0
-    ? Math.min(Math.floor(limitRaw), 300)
-    : 200;
+    ? Math.min(Math.floor(limitRaw), 5000)
+    : 1000;
 
   const query = tenantFilter(req);
   const openedAtRange = buildDateRangeQuery({ period, from, to });
@@ -179,7 +282,25 @@ router.get("/", authMiddleware, async (req, res) => {
     .limit(limit)
     .lean();
 
-  const summary = shifts.reduce(
+  const shiftSummaries = await Promise.all(
+    shifts.map((shift) => summarizeShift(req, shift._id, shift))
+  );
+  const shiftsWithSummary = shifts.map((shift, index) => {
+    const summary = shiftSummaries[index];
+    return {
+      ...shift,
+      totalSalesCount: summary.totalSalesCount,
+      totalItemsCount: summary.totalItemsCount,
+      totalAmount: summary.totalAmount,
+      totalCash: summary.totalCash,
+      totalCard: summary.totalCard,
+      totalClick: summary.totalClick,
+      totalDebt: summary.totalDebt,
+      lastSaleAt: summary.lastSaleAt || shift.lastSaleAt || null
+    };
+  });
+
+  const summary = shiftsWithSummary.reduce(
     (acc, shift) => {
       acc.totalShifts += 1;
       if (shift.status === "open") acc.openShifts += 1;
@@ -205,7 +326,7 @@ router.get("/", authMiddleware, async (req, res) => {
     }
   );
 
-  return res.json({ shifts, summary });
+  return res.json({ shifts: shiftsWithSummary, summary });
 });
 
 export default router;

@@ -69,6 +69,8 @@ flutter:
     - assets/branding/ataway_logo.jpg
     - assets/branding/ataway_receipt_logo.png
     - assets/branding/ataway_scan_logo.jpg
+    - assets/branding/ataway_customer_display.jpg
+    - assets/branding/humo_logo.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:

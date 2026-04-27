@@ -234,7 +234,7 @@ export function TransfersPage() {
                     <th>Mahsulot</th>
                     <th>Shtixkod</th>
                     <th>Astatka</th>
-                    <th>Narx</th>
+                    <th>Sotish narxi</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -244,7 +244,7 @@ export function TransfersPage() {
                       <td>{item.name} {item.code ? `(${item.code})` : ""}</td>
                       <td>{item.barcode}</td>
                       <td>{item.quantity} {normalizeUnit(item.unit)}</td>
-                      <td>{formatMoneyWithCurrency(item.purchasePrice)}</td>
+                      <td>{formatMoneyWithCurrency(item.retailPrice ?? item.purchasePrice)}</td>
                       <td>
                         <button type="button" className="primary-btn small" onClick={() => addToCart(item)}>
                           + Qo'shish

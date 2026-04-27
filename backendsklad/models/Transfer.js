@@ -19,6 +19,7 @@ const transferItemSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     model: { type: String, default: "", trim: true },
     barcode: { type: String, required: true, trim: true },
+    barcodeAliases: { type: [String], default: [] },
     unit: { type: String, required: true, trim: true },
     quantity: { type: Number, required: true, min: 1 },
     variants: { type: [transferVariantSchema], default: [] },

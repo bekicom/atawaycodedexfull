@@ -22,7 +22,7 @@ class SalesRepository {
     String cashierUsername = '',
     String shiftId = '',
   }) async {
-    final query = <String, dynamic>{'limit': 300};
+    final query = <String, dynamic>{'limit': 5000};
     if (period.isNotEmpty && period != 'all') {
       query['period'] = period;
     }
@@ -35,13 +35,22 @@ class SalesRepository {
       query['shiftId'] = shiftId.trim();
     }
 
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/sales',
-      queryParameters: query,
-      options: Options(headers: {'Authorization': 'Bearer $token'}),
-    );
-
-    return SalesHistoryRecord.fromJson(response.data ?? const {});
+    try {
+      final response = await _dio.get<Map<String, dynamic>>(
+        '/sales',
+        queryParameters: query,
+        options: Options(headers: {'Authorization': 'Bearer $token'}),
+      );
+      return SalesHistoryRecord.fromJson(response.data ?? const {});
+    } on DioException catch (error) {
+      if (error.response?.statusCode != 404) rethrow;
+      final fallback = await _fetchSalesWithFallbackBaseUrls(
+        token: token,
+        query: query,
+      );
+      if (fallback != null) return fallback;
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> createSale({
@@ -98,12 +107,81 @@ class SalesRepository {
       query['color'] = color.trim();
     }
 
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/sales/variant-insights',
-      queryParameters: query,
-      options: Options(headers: {'Authorization': 'Bearer $token'}),
-    );
+    try {
+      final response = await _dio.get<Map<String, dynamic>>(
+        '/sales/variant-insights',
+        queryParameters: query,
+        options: Options(headers: {'Authorization': 'Bearer $token'}),
+      );
+      return VariantSalesInsightsRecord.fromJson(response.data ?? const {});
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 404) {
+        return VariantSalesInsightsRecord.empty();
+      }
+      rethrow;
+    }
+  }
 
-    return VariantSalesInsightsRecord.fromJson(response.data ?? const {});
+  Future<SalesHistoryRecord?> _fetchSalesWithFallbackBaseUrls({
+    required String token,
+    required Map<String, dynamic> query,
+  }) async {
+    final currentBaseUrl = _dio.options.baseUrl.trim();
+    final candidates = _buildFallbackBaseUrls(currentBaseUrl);
+    if (candidates.isEmpty) return null;
+
+    for (final candidate in candidates) {
+      try {
+        final fallbackDio = Dio(_dio.options.copyWith(baseUrl: candidate));
+        final response = await fallbackDio.get<Map<String, dynamic>>(
+          '/sales',
+          queryParameters: query,
+          options: Options(headers: {'Authorization': 'Bearer $token'}),
+        );
+        return SalesHistoryRecord.fromJson(response.data ?? const {});
+      } on DioException catch (error) {
+        if (error.response?.statusCode == 404) {
+          continue;
+        }
+        rethrow;
+      }
+    }
+    return null;
+  }
+
+  List<String> _buildFallbackBaseUrls(String currentBaseUrl) {
+    final result = <String>[];
+    final current = currentBaseUrl.replaceAll(RegExp(r'/+$'), '');
+    if (current.isEmpty) return result;
+
+    void add(String value) {
+      final normalized = value.trim().replaceAll(RegExp(r'/+$'), '');
+      if (normalized.isEmpty) return;
+      if (normalized == current) return;
+      if (!result.contains(normalized)) {
+        result.add(normalized);
+      }
+    }
+
+    if (current.endsWith('/api')) {
+      add(current.substring(0, current.length - 4));
+    } else {
+      add('$current/api');
+    }
+
+    final uri = Uri.tryParse(current);
+    if (uri != null && uri.hasAuthority) {
+      final host = uri.host;
+      final scheme = uri.scheme.isEmpty ? 'http' : uri.scheme;
+      final currentPort = uri.hasPort ? uri.port : null;
+
+      if (currentPort != 4000) {
+        final portBase = '$scheme://$host:4000';
+        add('$portBase/api');
+        add(portBase);
+      }
+    }
+
+    return result;
   }
 }

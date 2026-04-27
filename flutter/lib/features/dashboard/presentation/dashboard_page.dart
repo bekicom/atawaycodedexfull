@@ -523,12 +523,12 @@ class _SuppliersDirectContentState
 
   String _formatDate(DateTime? value) {
     if (value == null) return '-';
-    return DateFormat('dd.MM.yyyy, HH:mm').format(value);
+    return DateFormat('dd.MM.yyyy, HH:mm').format(value.toLocal());
   }
 
   String _formatShortDate(DateTime? value) {
     if (value == null) return '-';
-    return DateFormat('dd.MM HH:mm').format(value);
+    return DateFormat('dd.MM HH:mm').format(value.toLocal());
   }
 
   String _paymentLabel(String value) {
@@ -2851,6 +2851,64 @@ class _SalesViewData {
   final VariantSalesInsightsRecord variantInsights;
 }
 
+class _ShiftComputedTotals {
+  const _ShiftComputedTotals({
+    required this.totalSalesCount,
+    required this.totalItemsCount,
+    required this.totalAmount,
+    required this.totalCash,
+    required this.totalCard,
+    required this.totalClick,
+    required this.totalDebt,
+  });
+
+  final int totalSalesCount;
+  final double totalItemsCount;
+  final double totalAmount;
+  final double totalCash;
+  final double totalCard;
+  final double totalClick;
+  final double totalDebt;
+
+  factory _ShiftComputedTotals.zero() {
+    return const _ShiftComputedTotals(
+      totalSalesCount: 0,
+      totalItemsCount: 0,
+      totalAmount: 0,
+      totalCash: 0,
+      totalCard: 0,
+      totalClick: 0,
+      totalDebt: 0,
+    );
+  }
+
+  _ShiftComputedTotals addSale(SaleRecord sale) {
+    final itemCount = sale.items.fold<double>(
+      0,
+      (sum, item) => sum + item.quantity,
+    );
+    return _ShiftComputedTotals(
+      totalSalesCount: totalSalesCount + 1,
+      totalItemsCount: totalItemsCount + itemCount,
+      totalAmount: totalAmount + sale.totalAmount,
+      totalCash: totalCash + sale.payments.cash,
+      totalCard: totalCard + sale.payments.card,
+      totalClick: totalClick + sale.payments.click,
+      totalDebt: totalDebt + sale.debtAmount,
+    );
+  }
+}
+
+class _ShiftComputation {
+  const _ShiftComputation({
+    required this.totalsByShiftId,
+    required this.saleToShiftId,
+  });
+
+  final Map<String, _ShiftComputedTotals> totalsByShiftId;
+  final Map<String, String> saleToShiftId;
+}
+
 class _SalesDirectContent extends ConsumerStatefulWidget {
   const _SalesDirectContent();
 
@@ -2952,9 +3010,9 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
       case 'cash':
         return 'Naqd';
       case 'card':
-        return 'Karta';
+        return 'UZCARD';
       case 'click':
-        return 'Click';
+        return 'HUMO';
       case 'mixed':
         return 'Aralash';
       case 'debt':
@@ -2975,12 +3033,12 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
 
   String _formatDate(DateTime? value) {
     if (value == null) return '-';
-    return DateFormat('dd.MM.yyyy, HH:mm').format(value);
+    return DateFormat('dd.MM.yyyy, HH:mm').format(value.toLocal());
   }
 
   String _formatShortDate(DateTime? value) {
     if (value == null) return '-';
-    return DateFormat('dd.MM HH:mm').format(value);
+    return DateFormat('dd.MM HH:mm').format(value.toLocal());
   }
 
   String _escapeHtml(String value) {
@@ -3017,6 +3075,10 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
     if (saveLocation == null) return;
 
     final shiftsById = {for (final shift in shifts.shifts) shift.id: shift};
+    final shiftComputation = _computeShiftData(
+      shifts: shifts.shifts,
+      sales: visibleSales,
+    );
 
     final totalVisibleAmount = visibleSales.fold<double>(
       0,
@@ -3060,9 +3122,16 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
     final totalVisibleSaleCount = visibleSales.length;
 
     final shiftRows = shifts.shifts.map((shift) {
-      final shiftSales = visibleSales
-          .where((sale) => sale.shiftId == shift.id)
-          .toList();
+      final shiftSales = visibleSales.where((sale) {
+        if (sale.shiftId == shift.id) return true;
+        final inferredShiftId = shiftComputation.saleToShiftId[_saleComputationKey(
+          sale,
+        )];
+        return inferredShiftId == shift.id;
+      }).toList();
+      final totals =
+          shiftComputation.totalsByShiftId[shift.id] ??
+          _ShiftComputedTotals.zero();
       final shiftProfit = shiftSales.fold<double>(
         0,
         (sum, sale) =>
@@ -3073,34 +3142,28 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                   itemSum + (item.lineProfit - item.returnedProfit),
             ),
       );
-      final shiftItems = shiftSales.fold<double>(
-        0,
-        (sum, sale) =>
-            sum +
-            sale.items.fold<double>(
-              0,
-              (itemSum, item) => itemSum + _leftQty(item),
-            ),
-      );
       return <String, String>{
         'Smena': shift.shiftNumber > 0 ? '#${shift.shiftNumber}' : '-',
         'Kassir': shift.cashierUsername,
         'Status': shift.isOpen ? 'Ochiq' : 'Yopiq',
         'Ochilgan': _formatDate(shift.openedAt),
         'Yopilgan': _formatDate(shift.closedAt),
-        'Sotuvlar': shiftSales.length.toString(),
-        'Soni': shiftItems.toStringAsFixed(0),
-        'Naqd': _formatMoney(shift.totalCash, settings),
-        'Karta': _formatMoney(shift.totalCard, settings),
-        'Click': _formatMoney(shift.totalClick, settings),
-        'Qarz': _formatMoney(shift.totalDebt, settings),
-        'Jami': _formatMoney(shift.totalAmount, settings),
+        'Sotuvlar': totals.totalSalesCount.toString(),
+        'Soni': totals.totalItemsCount.toStringAsFixed(0),
+        'Naqd': _formatMoney(totals.totalCash, settings),
+        'UZCARD': _formatMoney(totals.totalCard, settings),
+        'HUMO': _formatMoney(totals.totalClick, settings),
+        'Qarz': _formatMoney(totals.totalDebt, settings),
+        'Jami': _formatMoney(totals.totalAmount, settings),
         'Foyda': _formatMoney(shiftProfit, settings),
       };
     }).toList();
 
     final saleRows = visibleSales.map((sale) {
-      final shift = sale.shiftId.isEmpty ? null : shiftsById[sale.shiftId];
+      final resolvedShiftId = sale.shiftId.isNotEmpty
+          ? sale.shiftId
+          : (shiftComputation.saleToShiftId[_saleComputationKey(sale)] ?? '');
+      final shift = resolvedShiftId.isEmpty ? null : shiftsById[resolvedShiftId];
       final isDebtPayment =
           sale.transactionType == 'debt_payment' ||
           sale.paymentType == 'debt_payment';
@@ -3134,10 +3197,10 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
         'Soni': qtyText,
         'To\'lov': _paymentLabel(sale.paymentType),
         'Naqd': _formatMoney(sale.payments.cash, settings),
-        'Karta': _formatMoney(sale.payments.card, settings),
-        'Click': _formatMoney(sale.payments.click, settings),
+        'UZCARD': _formatMoney(sale.payments.card, settings),
+        'HUMO': _formatMoney(sale.payments.click, settings),
         'Qarz': _formatMoney(sale.debtAmount, settings),
-        'Chiqim': _formatMoney(saleCost, settings),
+        'Tannarx': _formatMoney(saleCost, settings),
         'Tushum': _formatMoney(sale.totalAmount, settings),
         'Foyda': _formatMoney(saleProfit, settings),
         'Qaytgan': _formatMoney(sale.returnedAmount, settings),
@@ -3231,8 +3294,8 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
       <div>Jami savdo: ${_escapeHtml(totalVisibleSaleCount.toString())}</div>
       <div>Jami mahsulot soni: ${_escapeHtml(totalVisibleItems.toStringAsFixed(0))}</div>
       <div>Naqd: ${_escapeHtml(_formatMoney(totalVisibleCash, settings))}</div>
-      <div>Karta: ${_escapeHtml(_formatMoney(totalVisibleCard, settings))}</div>
-      <div>Click: ${_escapeHtml(_formatMoney(totalVisibleClick, settings))}</div>
+      <div>UZCARD: ${_escapeHtml(_formatMoney(totalVisibleCard, settings))}</div>
+      <div>HUMO: ${_escapeHtml(_formatMoney(totalVisibleClick, settings))}</div>
       <div>Qarz: ${_escapeHtml(_formatMoney(totalVisibleDebt, settings))}</div>
       <div>Jami tushum: ${_escapeHtml(_formatMoney(totalVisibleAmount, settings))}</div>
       <div>Jami foyda: ${_escapeHtml(_formatMoney(totalVisibleProfit, settings))}</div>
@@ -3267,11 +3330,83 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
     return sale.items.every((item) => _leftQty(item) <= 0.0001);
   }
 
+  String _saleComputationKey(SaleRecord sale) {
+    return '${sale.id}|${sale.createdAt?.millisecondsSinceEpoch ?? 0}|${sale.paymentType}|${sale.totalAmount.toStringAsFixed(2)}';
+  }
+
+  bool _isSaleInShiftWindow(DateTime? saleAt, ShiftRecord shift) {
+    if (saleAt == null || shift.openedAt == null) return false;
+    final openedAt = shift.openedAt!;
+    final closedAt = shift.closedAt ?? DateTime.now().add(const Duration(seconds: 1));
+    return !saleAt.isBefore(openedAt) && !saleAt.isAfter(closedAt);
+  }
+
+  _ShiftComputation _computeShiftData({
+    required List<ShiftRecord> shifts,
+    required List<SaleRecord> sales,
+  }) {
+    final totalsByShiftId = <String, _ShiftComputedTotals>{
+      for (final shift in shifts) shift.id: _ShiftComputedTotals.zero(),
+    };
+    final saleToShiftId = <String, String>{};
+    final shiftsById = {for (final shift in shifts) shift.id: shift};
+    final shiftsByCashier = <String, List<ShiftRecord>>{};
+    for (final shift in shifts) {
+      final cashierKey = shift.cashierUsername.trim().toLowerCase();
+      shiftsByCashier.putIfAbsent(cashierKey, () => []).add(shift);
+    }
+    for (final value in shiftsByCashier.values) {
+      value.sort((a, b) {
+        final aOpened = a.openedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final bOpened = b.openedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        return bOpened.compareTo(aOpened);
+      });
+    }
+
+    for (final sale in sales) {
+      if (sale.transactionType != 'sale') continue;
+
+      ShiftRecord? matchedShift;
+      if (sale.shiftId.isNotEmpty) {
+        matchedShift = shiftsById[sale.shiftId];
+      }
+
+      if (matchedShift == null) {
+        final cashierKey = sale.cashierUsername.trim().toLowerCase();
+        final candidates = shiftsByCashier[cashierKey] ?? const <ShiftRecord>[];
+        if (candidates.isNotEmpty && sale.createdAt != null) {
+          final preferred = sale.shiftNumber > 0
+              ? candidates.where((shift) => shift.shiftNumber == sale.shiftNumber).toList()
+              : candidates;
+          final pool = preferred.isNotEmpty ? preferred : candidates;
+          for (final shift in pool) {
+            if (_isSaleInShiftWindow(sale.createdAt, shift)) {
+              matchedShift = shift;
+              break;
+            }
+          }
+        }
+      }
+
+      if (matchedShift == null) continue;
+      final saleKey = _saleComputationKey(sale);
+      saleToShiftId[saleKey] = matchedShift.id;
+      final current = totalsByShiftId[matchedShift.id] ?? _ShiftComputedTotals.zero();
+      totalsByShiftId[matchedShift.id] = current.addSale(sale);
+    }
+
+    return _ShiftComputation(
+      totalsByShiftId: totalsByShiftId,
+      saleToShiftId: saleToShiftId,
+    );
+  }
+
   Future<void> _showCashierShiftDialog({
     required BuildContext context,
     required String cashierUsername,
     required List<ShiftRecord> shifts,
     required AppSettingsRecord settings,
+    required Map<String, _ShiftComputedTotals> totalsByShiftId,
   }) async {
     await showDialog<void>(
       context: context,
@@ -3318,6 +3453,9 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                       separatorBuilder: (_, __) => const SizedBox(height: 12),
                       itemBuilder: (context, index) {
                         final shift = shifts[index];
+                        final totals =
+                            totalsByShiftId[shift.id] ??
+                            _ShiftComputedTotals.zero();
                         return Container(
                           padding: const EdgeInsets.all(16),
                           decoration: BoxDecoration(
@@ -3376,9 +3514,9 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                                   Text(
                                     'Tugagan: ${_formatDate(shift.closedAt)}',
                                   ),
-                                  Text('Savdo: ${shift.totalSalesCount}'),
+                                  Text('Savdo: ${totals.totalSalesCount}'),
                                   Text(
-                                    'Tovarlar: ${shift.totalItemsCount.toStringAsFixed(0)}',
+                                    'Tovarlar: ${totals.totalItemsCount.toStringAsFixed(0)}',
                                   ),
                                 ],
                               ),
@@ -3388,19 +3526,19 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                                 runSpacing: 8,
                                 children: [
                                   Text(
-                                    'Naqd: ${_formatMoney(shift.totalCash, settings)}',
+                                    'Naqd: ${_formatMoney(totals.totalCash, settings)}',
                                   ),
                                   Text(
-                                    'Karta: ${_formatMoney(shift.totalCard, settings)}',
+                                    'UZCARD: ${_formatMoney(totals.totalCard, settings)}',
                                   ),
                                   Text(
-                                    'Click: ${_formatMoney(shift.totalClick, settings)}',
+                                    'HUMO: ${_formatMoney(totals.totalClick, settings)}',
                                   ),
                                   Text(
-                                    'Qarz: ${_formatMoney(shift.totalDebt, settings)}',
+                                    'Qarz: ${_formatMoney(totals.totalDebt, settings)}',
                                   ),
                                   Text(
-                                    'Jami: ${_formatMoney(shift.totalAmount, settings)}',
+                                    'Jami: ${_formatMoney(totals.totalAmount, settings)}',
                                     style: const TextStyle(
                                       fontWeight: FontWeight.w800,
                                     ),
@@ -3462,6 +3600,10 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
         final selectedShiftExists =
             _shiftFilter.isEmpty ||
             shifts.shifts.any((shift) => shift.id == _shiftFilter);
+        final shiftComputation = _computeShiftData(
+          shifts: shifts.shifts,
+          sales: history.sales,
+        );
         final visibleSales = query.isEmpty
             ? history.sales
             : history.sales.where((sale) {
@@ -3477,15 +3619,14 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
         final totalPages = visibleSales.isEmpty
             ? 1
             : (visibleSales.length / _pageSize).ceil();
+        final totalReturnedAmount = visibleSales.fold<double>(
+          0,
+          (sum, sale) => sum + sale.returnedAmount,
+        );
         final safePage = _page.clamp(1, totalPages);
         final start = (safePage - 1) * _pageSize;
         final end = (start + _pageSize).clamp(0, visibleSales.length);
         final pagedSales = visibleSales.sublist(start, end);
-        final totalDebt = history.sales.fold<double>(
-          0,
-          (sum, sale) => sum + sale.debtAmount,
-        );
-
         if (!selectedShiftExists) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) {
@@ -3506,9 +3647,17 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
           });
         }
 
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+        return Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFFF7FAFF),
+            borderRadius: BorderRadius.circular(24),
+          ),
+          padding: const EdgeInsets.all(16),
+          child: DefaultTextStyle.merge(
+            style: const TextStyle(color: Color(0xFF183153)),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
             Wrap(
               spacing: 10,
               runSpacing: 10,
@@ -3698,6 +3847,8 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                 _SummaryCard(
                   label: 'Savdolar',
                   value: '${history.summary.totalSales}',
+                  icon: Icons.receipt_long_rounded,
+                  accent: const Color(0xFF1E62B7),
                 ),
                 _SummaryCard(
                   label: 'Kassaga tushgan',
@@ -3705,47 +3856,50 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                     history.summary.totalCollection,
                     settings,
                   ),
+                  icon: Icons.account_balance_wallet_rounded,
+                  accent: const Color(0xFF2CA857),
                 ),
                 _SummaryCard(
-                  label: 'Qarz to‘lovi',
-                  value: _formatMoney(
-                    history.summary.totalDebtPayment,
-                    settings,
-                  ),
+                  label: 'Vazvrat summasi',
+                  value: _formatMoney(totalReturnedAmount, settings),
+                  icon: Icons.assignment_return_rounded,
+                  accent: const Color(0xFFE24A3B),
                 ),
                 _SummaryCard(
-                  label: 'Karta',
+                  label: 'UZCARD',
                   value: _formatMoney(history.summary.totalCard, settings),
+                  brand: _DashboardBrand.uzcard,
                 ),
                 _SummaryCard(
                   label: 'Naqd',
                   value: _formatMoney(history.summary.totalCash, settings),
+                  icon: Icons.payments_rounded,
+                  accent: const Color(0xFF2CA857),
                 ),
                 _SummaryCard(
-                  label: 'Click',
+                  label: 'HUMO',
                   value: _formatMoney(history.summary.totalClick, settings),
+                  brand: _DashboardBrand.humo,
                 ),
                 _SummaryCard(
-                  label: 'Qarz',
-                  value: _formatMoney(totalDebt, settings),
-                ),
-                _SummaryCard(
-                  label: 'Savdo tushumi',
-                  value: _formatMoney(history.summary.totalRevenue, settings),
-                ),
-                _SummaryCard(
-                  label: 'Chiqim / Foyda',
+                  label: 'Tannarx / Foyda',
                   value:
                       '${_formatMoney(history.summary.totalExpense, settings)} / ${_formatMoney(history.summary.totalProfit, settings)}',
+                  icon: Icons.query_stats_rounded,
+                  accent: const Color(0xFF7D56F4),
                 ),
                 _SummaryCard(
                   label: 'Smenalar',
                   value: '${shifts.summary.totalShifts}',
+                  icon: Icons.layers_rounded,
+                  accent: const Color(0xFF1E62B7),
                 ),
                 _SummaryCard(
                   label: 'Ochiq / Yopiq',
                   value:
                       '${shifts.summary.openShifts} / ${shifts.summary.closedShifts}',
+                  icon: Icons.sync_alt_rounded,
+                  accent: const Color(0xFF4E647D),
                 ),
               ],
             ),
@@ -3754,9 +3908,16 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
               Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF203766),
+                  color: Colors.white,
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFF325183)),
+                  border: Border.all(color: const Color(0xFFD6E2F3)),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x120F2747),
+                      blurRadius: 16,
+                      offset: Offset(0, 8),
+                    ),
+                  ],
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -3767,6 +3928,7 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                           child: Text(
                             'Razmer va rang bo‘yicha sotuv statistikasi',
                             style: TextStyle(
+                              color: Color(0xFF163E7C),
                               fontSize: 18,
                               fontWeight: FontWeight.w800,
                             ),
@@ -3870,9 +4032,9 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                     const SizedBox(height: 12),
                     Container(
                       decoration: BoxDecoration(
-                        color: const Color(0xFF1B315B),
+                        color: const Color(0xFFF8FBFF),
                         borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: const Color(0xFF325183)),
+                        border: Border.all(color: const Color(0xFFD6E2F3)),
                       ),
                       child: Column(
                         children: [
@@ -3972,16 +4134,27 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: const Color(0xFF203766),
+                color: Colors.white,
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: const Color(0xFF325183)),
+                border: Border.all(color: const Color(0xFFD6E2F3)),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x120F2747),
+                    blurRadius: 16,
+                    offset: Offset(0, 8),
+                  ),
+                ],
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
                     'Smena hisobotlari',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                    style: TextStyle(
+                      color: Color(0xFF163E7C),
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                   const SizedBox(height: 10),
                   if (shifts.shifts.isEmpty)
@@ -4000,11 +4173,19 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                           final cashierShifts = entry.value;
                           final totalAmount = cashierShifts.fold<double>(
                             0,
-                            (sum, shift) => sum + shift.totalAmount,
+                            (sum, shift) =>
+                                sum +
+                                (shiftComputation.totalsByShiftId[shift.id]
+                                        ?.totalAmount ??
+                                    0),
                           );
                           final totalSales = cashierShifts.fold<int>(
                             0,
-                            (sum, shift) => sum + shift.totalSalesCount,
+                            (sum, shift) =>
+                                sum +
+                                (shiftComputation.totalsByShiftId[shift.id]
+                                        ?.totalSalesCount ??
+                                    0),
                           );
                           final openCount = cashierShifts
                               .where((shift) => shift.isOpen)
@@ -4016,17 +4197,18 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                               cashierUsername: cashier,
                               shifts: cashierShifts,
                               settings: settings,
+                              totalsByShiftId: shiftComputation.totalsByShiftId,
                             ),
                             child: Container(
                               width: 250,
                               padding: const EdgeInsets.all(14),
                               decoration: BoxDecoration(
-                                color: const Color(0xFF2A4475),
+                                color: const Color(0xFFF8FBFF),
                                 borderRadius: BorderRadius.circular(14),
                                 border: Border.all(
                                   color: openCount > 0
                                       ? const Color(0xFF67D68B)
-                                      : const Color(0xFF4B689A),
+                                      : const Color(0xFFD6E2F3),
                                 ),
                               ),
                               child: Column(
@@ -4035,6 +4217,7 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                                   Text(
                                     cashier,
                                     style: const TextStyle(
+                                      color: Color(0xFF183153),
                                       fontSize: 18,
                                       fontWeight: FontWeight.w900,
                                     ),
@@ -4056,7 +4239,7 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                                   const Text(
                                     'Batafsil ko‘rish',
                                     style: TextStyle(
-                                      color: Color(0xFF9FB6E9),
+                                      color: Color(0xFF6F87A7),
                                       fontSize: 12,
                                     ),
                                   ),
@@ -4074,9 +4257,16 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
             Expanded(
               child: Container(
                 decoration: BoxDecoration(
-                  color: const Color(0xFF203766),
+                  color: Colors.white,
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFF325183)),
+                  border: Border.all(color: const Color(0xFFD6E2F3)),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x120F2747),
+                      blurRadius: 18,
+                      offset: Offset(0, 8),
+                    ),
+                  ],
                 ),
                 child: Column(
                   children: [
@@ -4086,14 +4276,19 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                         vertical: 14,
                       ),
                       decoration: const BoxDecoration(
-                        color: Color(0xFF365892),
+                        color: Color(0xFF184384),
                         borderRadius: BorderRadius.only(
                           topLeft: Radius.circular(16),
                           topRight: Radius.circular(16),
                         ),
                       ),
-                      child: const Row(
-                        children: [
+                      child: const DefaultTextStyle(
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                        ),
+                        child: Row(
+                          children: [
                           Expanded(flex: 14, child: Text('Sana')),
                           Expanded(flex: 8, child: Text('Smena')),
                           Expanded(flex: 10, child: Text('Kassir')),
@@ -4101,30 +4296,56 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                           Expanded(flex: 12, child: Text('Soni')),
                           Expanded(flex: 10, child: Text('To‘lov')),
                           Expanded(flex: 9, child: Text('Naqd')),
-                          Expanded(flex: 9, child: Text('Karta')),
-                          Expanded(flex: 9, child: Text('Click')),
+                          Expanded(flex: 9, child: Text('UZCARD')),
+                          Expanded(flex: 9, child: Text('HUMO')),
                           Expanded(flex: 9, child: Text('Qarz')),
-                          Expanded(flex: 9, child: Text('Chiqim')),
+                          Expanded(flex: 9, child: Text('Tannarx')),
                           Expanded(flex: 9, child: Text('Tushum')),
                           Expanded(flex: 9, child: Text('Foyda')),
                         ],
+                        ),
                       ),
                     ),
                     Expanded(
                       child: pagedSales.isEmpty
-                          ? const Center(child: Text('Sotuv topilmadi'))
+                          ? const Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.inventory_2_outlined,
+                                    size: 42,
+                                    color: Color(0xFF9EB1CB),
+                                  ),
+                                  SizedBox(height: 10),
+                                  Text(
+                                    'Sotuv topilmadi',
+                                    style: TextStyle(
+                                      color: Color(0xFF6A7E9E),
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
                           : ListView.separated(
                               itemCount: pagedSales.length,
                               separatorBuilder: (context, index) =>
                                   const Divider(
                                     height: 1,
-                                    color: Color(0xFF325183),
+                                    color: Color(0xFFDCE7F4),
                                   ),
                               itemBuilder: (context, index) {
                                 final sale = pagedSales[index];
-                                final shift = sale.shiftId.isEmpty
+                                final resolvedShiftId = sale.shiftId.isNotEmpty
+                                    ? sale.shiftId
+                                    : (shiftComputation.saleToShiftId[_saleComputationKey(
+                                        sale,
+                                      )] ??
+                                      '');
+                                final shift = resolvedShiftId.isEmpty
                                     ? null
-                                    : shiftsById[sale.shiftId];
+                                    : shiftsById[resolvedShiftId];
                                 final isDebtPayment =
                                     sale.transactionType == 'debt_payment' ||
                                     sale.paymentType == 'debt_payment';
@@ -4164,8 +4385,8 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                                     vertical: 14,
                                   ),
                                   color: fullyReturned
-                                      ? const Color(0xFF2A3458)
-                                      : const Color(0xFF223A69),
+                                      ? const Color(0xFFFFF2F0)
+                                      : Colors.white,
                                   child: Row(
                                     crossAxisAlignment:
                                         CrossAxisAlignment.start,
@@ -4192,7 +4413,7 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                                                 '${_formatShortDate(shift.openedAt)} - ${_formatShortDate(shift.closedAt)}',
                                                 style: const TextStyle(
                                                   fontSize: 11,
-                                                  color: Color(0xFF9CB3D8),
+                                                  color: Color(0xFF7D8FA8),
                                                 ),
                                               ),
                                           ],
@@ -4217,7 +4438,7 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                                                 child: Text(
                                                   'Vozvrat qilindi',
                                                   style: TextStyle(
-                                                    color: Color(0xFFFFB3B3),
+                                                    color: Color(0xFFD64545),
                                                     fontWeight: FontWeight.w700,
                                                   ),
                                                 ),
@@ -4303,7 +4524,7 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                         padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
                         decoration: const BoxDecoration(
                           border: Border(
-                            top: BorderSide(color: Color(0xFF325183)),
+                            top: BorderSide(color: Color(0xFFDCE7F4)),
                           ),
                         ),
                         child: Row(
@@ -4347,18 +4568,31 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                 ),
               ),
             ),
-          ],
+              ],
+            ),
+          ),
         );
       },
     );
   }
 }
 
+enum _DashboardBrand { uzcard, humo }
+
 class _SummaryCard extends StatelessWidget {
-  const _SummaryCard({required this.label, required this.value});
+  const _SummaryCard({
+    required this.label,
+    required this.value,
+    this.icon,
+    this.accent = const Color(0xFF1E62B7),
+    this.brand,
+  });
 
   final String label;
   final String value;
+  final IconData? icon;
+  final Color accent;
+  final _DashboardBrand? brand;
 
   @override
   Widget build(BuildContext context) {
@@ -4366,21 +4600,128 @@ class _SummaryCard extends StatelessWidget {
       width: 188,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF223A69),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF325183)),
+        border: Border.all(color: const Color(0xFFD6E2F3)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x120F2747),
+            blurRadius: 16,
+            offset: Offset(0, 8),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(color: Color(0xFF9FB6E9))),
-          const SizedBox(height: 8),
+          Row(
+            children: [
+              _DashboardStatBadge(
+                brand: brand,
+                accent: accent,
+                icon: icon ?? Icons.circle,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: accent,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
           Text(
             value,
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFF183153),
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+            ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _DashboardStatBadge extends StatelessWidget {
+  const _DashboardStatBadge({
+    required this.icon,
+    required this.accent,
+    this.brand,
+  });
+
+  final IconData icon;
+  final Color accent;
+  final _DashboardBrand? brand;
+
+  @override
+  Widget build(BuildContext context) {
+    if (brand == _DashboardBrand.humo) {
+      return Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: const Color(0xFFF1F4FA),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        padding: const EdgeInsets.all(5),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.asset('assets/branding/humo_logo.png', fit: BoxFit.contain),
+        ),
+      );
+    }
+
+    if (brand == _DashboardBrand.uzcard) {
+      return Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: const Color(0xFF11489B),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              'U',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+                height: 0.9,
+              ),
+            ),
+            Text(
+              'UZCARD',
+              style: TextStyle(
+                color: Color(0xFFFFC94E),
+                fontSize: 5.5,
+                fontWeight: FontWeight.w900,
+                height: 0.9,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      width: 38,
+      height: 38,
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Icon(icon, color: accent, size: 20),
     );
   }
 }
@@ -5679,7 +6020,7 @@ class _CustomersDirectContentState
 
   String _formatDate(DateTime? value) {
     if (value == null) return '-';
-    return DateFormat('dd.MM.yyyy, HH:mm').format(value);
+    return DateFormat('dd.MM.yyyy, HH:mm').format(value.toLocal());
   }
 
   String _friendlyError(Object error) {

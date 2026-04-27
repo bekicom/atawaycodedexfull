@@ -375,7 +375,7 @@ class _CustomerDisplayPageState extends State<_CustomerDisplayPage> {
                         scale: scale,
                         padding: EdgeInsets.all(10 * scale),
                         child: _state.items.isEmpty
-                            ? const SizedBox.expand()
+                            ? _EmptyDisplayArtwork(scale: scale)
                             : Column(
                                 children: [
                                   Container(
@@ -696,6 +696,30 @@ class _GlassPanel extends StatelessWidget {
             border: Border.all(color: _DisplayPalette.panelBorder, width: 1.2),
           ),
           child: child,
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyDisplayArtwork extends StatelessWidget {
+  const _EmptyDisplayArtwork({required this.scale});
+
+  final double scale;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18 * scale),
+      child: Container(
+        color: const Color(0xFFF8F7F5),
+        child: Opacity(
+          opacity: 0.34,
+          child: Image.asset(
+            'assets/branding/ataway_customer_display.jpg',
+            fit: BoxFit.contain,
+            alignment: Alignment.center,
+          ),
         ),
       ),
     );

@@ -62,7 +62,7 @@ class ShiftsRepository {
     String cashierUsername = '',
     String status = '',
   }) async {
-    final query = <String, dynamic>{'limit': 300};
+    final query = <String, dynamic>{'limit': 5000};
     if (period.isNotEmpty && period != 'all') {
       query['period'] = period;
     }
