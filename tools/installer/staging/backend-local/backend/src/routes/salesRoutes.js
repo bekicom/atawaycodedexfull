@@ -24,15 +24,34 @@ function normalizeItems(rawItems) {
     const quantity = Number(it?.quantity);
     const priceType = String(it?.priceType || "retail").trim().toLowerCase();
     const unitPrice = Number(it?.unitPrice);
+    const saleMode = String(it?.saleMode || "base").trim().toLowerCase() === "piece"
+      ? "piece"
+      : "base";
+    const saleUnit = String(it?.saleUnit || "").trim().toLowerCase();
+    const stockPerUnitInBaseRaw = Number(it?.stockPerUnitInBase);
+    const stockPerUnitInBase = Number.isFinite(stockPerUnitInBaseRaw) && stockPerUnitInBaseRaw > 0
+      ? roundMoney(stockPerUnitInBaseRaw)
+      : 1;
     if (!productId || !Number.isFinite(quantity) || quantity <= 0) continue;
     const normalizedPriceType = priceType === "wholesale" ? "wholesale" : "retail";
     const safeUnitPrice = Number.isFinite(unitPrice) && unitPrice >= 0 ? roundMoney(unitPrice) : null;
-    const key = `${productId}:${normalizedPriceType}:${safeUnitPrice ?? "auto"}`;
-    const prev = merged.get(key) || { productId, quantity: 0, priceType: normalizedPriceType, unitPrice: safeUnitPrice };
+    const key = `${productId}:${normalizedPriceType}:${safeUnitPrice ?? "auto"}:${saleMode}:${saleUnit || "-"}`;
+    const prev = merged.get(key) || {
+      productId,
+      quantity: 0,
+      priceType: normalizedPriceType,
+      unitPrice: safeUnitPrice,
+      saleMode,
+      saleUnit,
+      stockPerUnitInBase
+    };
     merged.set(key, {
       productId,
       priceType: normalizedPriceType,
       unitPrice: safeUnitPrice,
+      saleMode,
+      saleUnit,
+      stockPerUnitInBase,
       quantity: roundMoney(prev.quantity + quantity)
     });
   }
@@ -426,7 +445,16 @@ router.get("/", authMiddleware, async (req, res) => {
         totalCard: 0,
         totalClick: 0,
         totalProfit: 0,
-        totalExpense: 0
+        totalExpense: 0,
+        totalReturnedAmount: 0,
+        totalReturnedCash: 0,
+        totalReturnedCard: 0,
+        totalReturnedClick: 0,
+        netRevenue: 0,
+        netCollection: 0,
+        netCash: 0,
+        netCard: 0,
+        netClick: 0
       } });
     }
 
@@ -512,22 +540,21 @@ router.get("/", authMiddleware, async (req, res) => {
     const cash = Number(sale.payments?.cash || 0);
     const card = Number(sale.payments?.card || 0);
     const click = Number(sale.payments?.click || 0);
+    const grossRevenue = txType === "debt_payment" ? 0 : (total + returnedAmount);
     const profit = txType === "debt_payment"
       ? 0
       : (sale.items || []).reduce(
-        (s, it) => s + (Number(it.lineProfit || 0) - Number(it.returnedProfit || 0)),
+        (s, it) => s + Number(it.lineProfit || 0),
         0
       );
     const expense = txType === "debt_payment"
       ? 0
-      : Math.max(0, total - profit);
+      : Math.max(0, grossRevenue - profit);
     return {
       totalTransactions: acc.totalTransactions + 1,
       totalSales: acc.totalSales + (txType === "debt_payment" ? 0 : 1),
       totalDebtPaymentCount: acc.totalDebtPaymentCount + (txType === "debt_payment" ? 1 : 0),
-      totalRevenue: roundMoney(
-        acc.totalRevenue + (txType === "debt_payment" ? 0 : (total + returnedAmount))
-      ),
+      totalRevenue: roundMoney(acc.totalRevenue + grossRevenue),
       totalDebtPayment: roundMoney(acc.totalDebtPayment + (txType === "debt_payment" ? total : 0)),
       totalCollection: roundMoney(acc.totalCollection + cash + card + click),
       totalCash: roundMoney(acc.totalCash + cash),
@@ -550,14 +577,18 @@ router.get("/", authMiddleware, async (req, res) => {
     totalExpense: 0
   });
 
-  summary.totalRevenue = roundMoney(Math.max(0, summary.totalRevenue - returnSummary.totalAmount));
-  summary.totalCollection = roundMoney(Math.max(
+  summary.totalReturnedAmount = roundMoney(returnSummary.totalAmount);
+  summary.totalReturnedCash = roundMoney(returnSummary.totalCash);
+  summary.totalReturnedCard = roundMoney(returnSummary.totalCard);
+  summary.totalReturnedClick = roundMoney(returnSummary.totalClick);
+  summary.netRevenue = roundMoney(Math.max(0, summary.totalRevenue - returnSummary.totalAmount));
+  summary.netCollection = roundMoney(Math.max(
     0,
     summary.totalCollection - returnSummary.totalCash - returnSummary.totalCard - returnSummary.totalClick
   ));
-  summary.totalCash = roundMoney(Math.max(0, summary.totalCash - returnSummary.totalCash));
-  summary.totalCard = roundMoney(Math.max(0, summary.totalCard - returnSummary.totalCard));
-  summary.totalClick = roundMoney(Math.max(0, summary.totalClick - returnSummary.totalClick));
+  summary.netCash = roundMoney(Math.max(0, summary.totalCash - returnSummary.totalCash));
+  summary.netCard = roundMoney(Math.max(0, summary.totalCard - returnSummary.totalCard));
+  summary.netClick = roundMoney(Math.max(0, summary.totalClick - returnSummary.totalClick));
 
   return res.json({ sales, summary });
 });
@@ -587,9 +618,12 @@ router.get("/returns", authMiddleware, async (req, res) => {
       $project: {
         _id: "$returns._id",
         saleId: "$_id",
+        saleNumber: "$saleNumber",
         saleCreatedAt: "$createdAt",
         returnCreatedAt: "$returns.createdAt",
         cashierUsername: "$returns.cashierUsername",
+        shiftId: "$returns.shiftId",
+        shiftNumber: "$returns.shiftNumber",
         paymentType: "$returns.paymentType",
         payments: "$returns.payments",
         totalAmount: "$returns.totalAmount",
@@ -661,8 +695,14 @@ router.post("/", authMiddleware, async (req, res) => {
       return res.status(400).json({ message: "Mahsulot topilmadi" });
     }
 
+    const stockPerUnitInBase = Number.isFinite(reqItem.stockPerUnitInBase) && reqItem.stockPerUnitInBase > 0
+      ? Number(reqItem.stockPerUnitInBase)
+      : 1;
+    const saleMode = reqItem.saleMode === "piece" ? "piece" : "base";
+    const saleUnit = String(reqItem.saleUnit || "").trim() || String(product.unit || "").trim();
+    const baseQuantity = roundMoney(reqItem.quantity * stockPerUnitInBase);
     const currentQty = Number(product.quantity) || 0;
-    if (reqItem.quantity > currentQty) {
+    if (baseQuantity > currentQty) {
       return res.status(409).json({
         message: `${product.name} uchun qoldiq yetarli emas (${currentQty})`
       });
@@ -674,16 +714,22 @@ router.post("/", authMiddleware, async (req, res) => {
     const unitPrice = Number.isFinite(reqItem.unitPrice) && reqItem.unitPrice >= 0
       ? Number(reqItem.unitPrice)
       : defaultUnitPrice;
-    const costPrice = Number(product.purchasePrice) || 0;
+    const baseCostPrice = Number(product.purchasePrice) || 0;
+    const costPrice = saleMode === "piece"
+      ? roundMoney(baseCostPrice * stockPerUnitInBase)
+      : baseCostPrice;
     const lineTotal = roundMoney(unitPrice * reqItem.quantity);
     const lineProfit = roundMoney((unitPrice - costPrice) * reqItem.quantity);
     saleItems.push({
       productId: product._id,
       productName: product.name,
       productModel: product.model || "",
-      unit: product.unit,
+      unit: saleUnit,
+      saleMode,
+      stockPerUnitInBase,
       priceType: reqItem.priceType === "wholesale" ? "wholesale" : "retail",
       quantity: reqItem.quantity,
+      baseQuantity,
       unitPrice,
       lineTotal,
       costPrice,
@@ -759,8 +805,8 @@ router.post("/", authMiddleware, async (req, res) => {
   const applied = [];
   for (const item of saleItems) {
     const updated = await Product.updateOne(
-      tenantFilter(req, { _id: item.productId, quantity: { $gte: item.quantity } }),
-      { $inc: { quantity: -item.quantity } }
+      tenantFilter(req, { _id: item.productId, quantity: { $gte: item.baseQuantity } }),
+      { $inc: { quantity: -item.baseQuantity } }
     );
 
     if (updated.modifiedCount !== 1) {
@@ -769,7 +815,7 @@ router.post("/", authMiddleware, async (req, res) => {
       }
       return res.status(409).json({ message: `${item.productName} qoldig'i yetarli emas` });
     }
-    applied.push({ productId: item.productId, quantity: item.quantity });
+    applied.push({ productId: item.productId, quantity: item.baseQuantity });
   }
 
   const sale = await Sale.create(withTenant(req, {
@@ -855,6 +901,10 @@ router.post("/:id/returns", authMiddleware, async (req, res) => {
 
     const unitPrice = Number(saleItem.unitPrice || 0);
     const costPrice = Number(saleItem.costPrice || 0);
+    const stockPerUnitInBase = Number(saleItem.stockPerUnitInBase || 1) > 0
+      ? Number(saleItem.stockPerUnitInBase || 1)
+      : 1;
+    const baseQuantity = roundMoney(item.quantity * stockPerUnitInBase);
     const lineTotal = roundMoney(unitPrice * item.quantity);
     const lineProfit = roundMoney((unitPrice - costPrice) * item.quantity);
 
@@ -863,6 +913,8 @@ router.post("/:id/returns", authMiddleware, async (req, res) => {
       productName: saleItem.productName,
       unit: saleItem.unit,
       quantity: roundMoney(item.quantity),
+      baseQuantity,
+      stockPerUnitInBase,
       unitPrice,
       lineTotal,
       lineProfit
@@ -925,7 +977,7 @@ router.post("/:id/returns", authMiddleware, async (req, res) => {
   for (const item of returnItems) {
     const changed = await Product.updateOne(
       tenantFilter(req, { _id: item.productId }),
-      { $inc: { quantity: item.quantity } }
+      { $inc: { quantity: item.baseQuantity } }
     );
     if (changed.matchedCount !== 1) {
       for (const rollback of updatedStock) {
@@ -933,13 +985,14 @@ router.post("/:id/returns", authMiddleware, async (req, res) => {
       }
       return res.status(409).json({ message: `${item.productName} omborda topilmadi` });
     }
-    updatedStock.push({ productId: item.productId, quantity: item.quantity });
+    updatedStock.push({ productId: item.productId, quantity: item.baseQuantity });
   }
 
   for (const item of returnItems) {
     const target = sale.items.find((it) => String(it.productId) === String(item.productId));
     if (!target) continue;
     target.returnedQuantity = roundMoney(Number(target.returnedQuantity || 0) + item.quantity);
+    target.returnedBaseQuantity = roundMoney(Number(target.returnedBaseQuantity || 0) + item.baseQuantity);
     target.returnedTotal = roundMoney(Number(target.returnedTotal || 0) + item.lineTotal);
     target.returnedProfit = roundMoney(Number(target.returnedProfit || 0) + item.lineProfit);
   }

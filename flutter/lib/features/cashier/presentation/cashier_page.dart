@@ -308,13 +308,17 @@ Write-Output \$preferredPrinter
   }
 
   _PieceSaleConfig _resolvePieceSaleConfig(ProductRecord product) {
-    var pieceUnit = product.pieceUnit.trim().isEmpty ? 'dona' : product.pieceUnit;
+    var pieceUnit = product.pieceUnit.trim().isEmpty
+        ? 'dona'
+        : product.pieceUnit;
     var qtyPerBase = product.pieceQtyPerBase;
     var piecePrice = product.piecePrice;
 
     if (qtyPerBase <= 0) {
       final name = product.name.toLowerCase();
-      final match = RegExp(r'[\(\s](\d+(?:[.,]\d+)?)\s*(ut|шт|dona)\)?').firstMatch(name);
+      final match = RegExp(
+        r'[\(\s](\d+(?:[.,]\d+)?)\s*(ut|шт|dona)\)?',
+      ).firstMatch(name);
       if (match != null) {
         qtyPerBase = double.tryParse(match.group(1)!.replaceAll(',', '.')) ?? 0;
         pieceUnit = 'dona';
@@ -322,7 +326,9 @@ Write-Output \$preferredPrinter
     }
 
     if (piecePrice <= 0 && qtyPerBase > 0) {
-      final basePrice = product.retailPrice > 0 ? product.retailPrice : product.wholesalePrice;
+      final basePrice = product.retailPrice > 0
+          ? product.retailPrice
+          : product.wholesalePrice;
       if (basePrice > 0) {
         piecePrice = basePrice / qtyPerBase;
       }
@@ -2733,7 +2739,9 @@ Write-Output \$preferredPrinter
                             Text(
                               openedAt == null
                                   ? '-'
-                                  : DateFormat('dd.MM.yyyy  H:mm:ss').format(openedAt),
+                                  : DateFormat(
+                                      'dd.MM.yyyy  H:mm:ss',
+                                    ).format(openedAt),
                               textAlign: TextAlign.center,
                               style: const TextStyle(
                                 color: Color(0xFF111111),
@@ -2765,7 +2773,9 @@ Write-Output \$preferredPrinter
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              DateFormat('dd.MM.yyyy  H:mm:ss').format(closedAt),
+                              DateFormat(
+                                'dd.MM.yyyy  H:mm:ss',
+                              ).format(closedAt),
                               textAlign: TextAlign.center,
                               style: const TextStyle(
                                 color: Color(0xFF111111),
@@ -2790,11 +2800,20 @@ Write-Output \$preferredPrinter
                             const SizedBox(height: 8),
                             _shiftReceiptRule('*'),
                             const SizedBox(height: 12),
-                            _shiftReceiptRow('Sotuvlar soni:', '${report.salesReceiptCount}'),
+                            _shiftReceiptRow(
+                              'Sotuvlar soni:',
+                              '${report.salesReceiptCount}',
+                            ),
                             const SizedBox(height: 4),
-                            _shiftReceiptRow('Sotuv pozitsiyasi:', '${report.salesLineCount}'),
+                            _shiftReceiptRow(
+                              'Sotuv pozitsiyasi:',
+                              '${report.salesLineCount}',
+                            ),
                             const SizedBox(height: 4),
-                            _shiftReceiptRow('Sotilgan birlik:', _formatQty(report.salesUnitCount)),
+                            _shiftReceiptRow(
+                              'Sotilgan birlik:',
+                              _formatQty(report.salesUnitCount),
+                            ),
                             const SizedBox(height: 14),
                             _shiftReceiptRule('-'),
                             const SizedBox(height: 12),
@@ -2802,15 +2821,27 @@ Write-Output \$preferredPrinter
                             const SizedBox(height: 12),
                             _shiftReceiptRule('-'),
                             const SizedBox(height: 14),
-                            _shiftReceiptRow('Naqd', _formatReceiptMoney(report.salesCash)),
+                            _shiftReceiptRow(
+                              'Naqd',
+                              _formatReceiptMoney(report.salesCash),
+                            ),
                             const SizedBox(height: 4),
-                            _shiftReceiptRow('UZCARD', _formatReceiptMoney(report.salesCard)),
+                            _shiftReceiptRow(
+                              'UZCARD',
+                              _formatReceiptMoney(report.salesCard),
+                            ),
                             const SizedBox(height: 4),
-                            _shiftReceiptRow('HUMO', _formatReceiptMoney(report.salesClick)),
+                            _shiftReceiptRow(
+                              'HUMO',
+                              _formatReceiptMoney(report.salesClick),
+                            ),
                             const SizedBox(height: 12),
                             _shiftReceiptRule('='),
                             const SizedBox(height: 10),
-                            _shiftReceiptRow('JAMI SOTUV', _formatReceiptMoney(report.salesTotal)),
+                            _shiftReceiptRow(
+                              'JAMI SOTUV',
+                              _formatReceiptMoney(report.salesTotal),
+                            ),
                             const SizedBox(height: 10),
                             _shiftReceiptRule('='),
                             const SizedBox(height: 16),
@@ -2818,11 +2849,20 @@ Write-Output \$preferredPrinter
                             const SizedBox(height: 8),
                             _shiftReceiptRule('*'),
                             const SizedBox(height: 12),
-                            _shiftReceiptRow('Qaytimlar soni:', '${report.returnReceiptCount}'),
+                            _shiftReceiptRow(
+                              'Qaytimlar soni:',
+                              '${report.returnReceiptCount}',
+                            ),
                             const SizedBox(height: 4),
-                            _shiftReceiptRow('Qaytim pozitsiyasi:', '${report.returnLineCount}'),
+                            _shiftReceiptRow(
+                              'Qaytim pozitsiyasi:',
+                              '${report.returnLineCount}',
+                            ),
                             const SizedBox(height: 4),
-                            _shiftReceiptRow('Qaytgan birlik:', _formatQty(report.returnUnitCount)),
+                            _shiftReceiptRow(
+                              'Qaytgan birlik:',
+                              _formatQty(report.returnUnitCount),
+                            ),
                             const SizedBox(height: 14),
                             _shiftReceiptRule('-'),
                             const SizedBox(height: 12),
@@ -2830,15 +2870,27 @@ Write-Output \$preferredPrinter
                             const SizedBox(height: 12),
                             _shiftReceiptRule('-'),
                             const SizedBox(height: 14),
-                            _shiftReceiptRow('Naqd', _formatReceiptMoney(report.returnCash)),
+                            _shiftReceiptRow(
+                              'Naqd',
+                              _formatReceiptMoney(report.returnCash),
+                            ),
                             const SizedBox(height: 4),
-                            _shiftReceiptRow('UZCARD', _formatReceiptMoney(report.returnCard)),
+                            _shiftReceiptRow(
+                              'UZCARD',
+                              _formatReceiptMoney(report.returnCard),
+                            ),
                             const SizedBox(height: 4),
-                            _shiftReceiptRow('HUMO', _formatReceiptMoney(report.returnClick)),
+                            _shiftReceiptRow(
+                              'HUMO',
+                              _formatReceiptMoney(report.returnClick),
+                            ),
                             const SizedBox(height: 12),
                             _shiftReceiptRule('='),
                             const SizedBox(height: 10),
-                            _shiftReceiptRow('JAMI QAYTIM', _formatReceiptMoney(report.returnTotal)),
+                            _shiftReceiptRow(
+                              'JAMI QAYTIM',
+                              _formatReceiptMoney(report.returnTotal),
+                            ),
                             const SizedBox(height: 10),
                             _shiftReceiptRule('='),
                             const SizedBox(height: 16),
@@ -2846,15 +2898,27 @@ Write-Output \$preferredPrinter
                             const SizedBox(height: 8),
                             _shiftReceiptRule('*'),
                             const SizedBox(height: 12),
-                            _shiftReceiptRow('Naqd', _formatReceiptMoney(report.netCash)),
+                            _shiftReceiptRow(
+                              'Naqd',
+                              _formatReceiptMoney(report.netCash),
+                            ),
                             const SizedBox(height: 4),
-                            _shiftReceiptRow('UZCARD', _formatReceiptMoney(report.netCard)),
+                            _shiftReceiptRow(
+                              'UZCARD',
+                              _formatReceiptMoney(report.netCard),
+                            ),
                             const SizedBox(height: 4),
-                            _shiftReceiptRow('HUMO', _formatReceiptMoney(report.netClick)),
+                            _shiftReceiptRow(
+                              'HUMO',
+                              _formatReceiptMoney(report.netClick),
+                            ),
                             const SizedBox(height: 12),
                             _shiftReceiptRule('='),
                             const SizedBox(height: 10),
-                            _shiftReceiptRow('YAKUNIY JAMI', _formatReceiptMoney(report.netTotal)),
+                            _shiftReceiptRow(
+                              'YAKUNIY JAMI',
+                              _formatReceiptMoney(report.netTotal),
+                            ),
                           ],
                         ),
                       ),
@@ -2879,7 +2943,10 @@ Write-Output \$preferredPrinter
     );
   }
 
-  String _buildShiftCloseReceiptText(_ShiftCloseReport report, {int width = 36}) {
+  String _buildShiftCloseReceiptText(
+    _ShiftCloseReport report, {
+    int width = 36,
+  }) {
     final openedAt = report.shift.openedAt?.toLocal();
     final closedAt = report.shift.closedAt?.toLocal() ?? report.generatedAt;
     final openedText = openedAt == null
@@ -2906,31 +2973,83 @@ Write-Output \$preferredPrinter
       _receiptFill('*', width),
       _receiptCenter('SOTUV NAZORATI', width),
       _receiptFill('*', width),
-      _receiptPair('Sotuvlar soni:', '${report.salesReceiptCount}', width: width),
-      _receiptPair('Sotuv pozitsiyasi:', '${report.salesLineCount}', width: width),
-      _receiptPair('Sotilgan birlik:', _formatQty(report.salesUnitCount), width: width),
+      _receiptPair(
+        'Sotuvlar soni:',
+        '${report.salesReceiptCount}',
+        width: width,
+      ),
+      _receiptPair(
+        'Sotuv pozitsiyasi:',
+        '${report.salesLineCount}',
+        width: width,
+      ),
+      _receiptPair(
+        'Sotilgan birlik:',
+        _formatQty(report.salesUnitCount),
+        width: width,
+      ),
       _receiptFill('-', width),
       _receiptPair('Bekor sotuvlar:', '$annulledSalesCount', width: width),
       _receiptFill('-', width),
       _receiptPair('Naqd', _formatReceiptMoney(report.salesCash), width: width),
-      _receiptPair('UZCARD', _formatReceiptMoney(report.salesCard), width: width),
-      _receiptPair('HUMO', _formatReceiptMoney(report.salesClick), width: width),
+      _receiptPair(
+        'UZCARD',
+        _formatReceiptMoney(report.salesCard),
+        width: width,
+      ),
+      _receiptPair(
+        'HUMO',
+        _formatReceiptMoney(report.salesClick),
+        width: width,
+      ),
       _receiptFill('=', width),
-      _receiptPair('JAMI SOTUV', _formatReceiptMoney(report.salesTotal), width: width),
+      _receiptPair(
+        'JAMI SOTUV',
+        _formatReceiptMoney(report.salesTotal),
+        width: width,
+      ),
       _receiptFill('=', width),
       _receiptCenter('QAYTIM NAZORATI', width),
       _receiptFill('*', width),
-      _receiptPair('Qaytimlar soni:', '${report.returnReceiptCount}', width: width),
-      _receiptPair('Qaytim pozitsiyasi:', '${report.returnLineCount}', width: width),
-      _receiptPair('Qaytgan birlik:', _formatQty(report.returnUnitCount), width: width),
+      _receiptPair(
+        'Qaytimlar soni:',
+        '${report.returnReceiptCount}',
+        width: width,
+      ),
+      _receiptPair(
+        'Qaytim pozitsiyasi:',
+        '${report.returnLineCount}',
+        width: width,
+      ),
+      _receiptPair(
+        'Qaytgan birlik:',
+        _formatQty(report.returnUnitCount),
+        width: width,
+      ),
       _receiptFill('-', width),
       _receiptPair('Bekor qaytimlar:', '$annulledReturnsCount', width: width),
       _receiptFill('-', width),
-      _receiptPair('Naqd', _formatReceiptMoney(report.returnCash), width: width),
-      _receiptPair('UZCARD', _formatReceiptMoney(report.returnCard), width: width),
-      _receiptPair('HUMO', _formatReceiptMoney(report.returnClick), width: width),
+      _receiptPair(
+        'Naqd',
+        _formatReceiptMoney(report.returnCash),
+        width: width,
+      ),
+      _receiptPair(
+        'UZCARD',
+        _formatReceiptMoney(report.returnCard),
+        width: width,
+      ),
+      _receiptPair(
+        'HUMO',
+        _formatReceiptMoney(report.returnClick),
+        width: width,
+      ),
       _receiptFill('=', width),
-      _receiptPair('JAMI QAYTIM', _formatReceiptMoney(report.returnTotal), width: width),
+      _receiptPair(
+        'JAMI QAYTIM',
+        _formatReceiptMoney(report.returnTotal),
+        width: width,
+      ),
       _receiptFill('=', width),
       _receiptCenter('YAKUNIY HOLAT', width),
       _receiptFill('*', width),
@@ -2938,7 +3057,11 @@ Write-Output \$preferredPrinter
       _receiptPair('UZCARD', _formatReceiptMoney(report.netCard), width: width),
       _receiptPair('HUMO', _formatReceiptMoney(report.netClick), width: width),
       _receiptFill('=', width),
-      _receiptPair('YAKUNIY JAMI', _formatReceiptMoney(report.netTotal), width: width),
+      _receiptPair(
+        'YAKUNIY JAMI',
+        _formatReceiptMoney(report.netTotal),
+        width: width,
+      ),
     ];
 
     return lines.join('\n');
@@ -3001,7 +3124,8 @@ Write-Output \$preferredPrinter
     );
   }
 
-  String _receiptFill(String symbol, int width) => ''.padRight(width, symbol[0]);
+  String _receiptFill(String symbol, int width) =>
+      ''.padRight(width, symbol[0]);
 
   String _receiptCenter(String value, int width) {
     final text = value.trim();
@@ -3013,8 +3137,12 @@ Write-Output \$preferredPrinter
   String _receiptPair(String label, String value, {int width = 36}) {
     final rightWidth = 12;
     final leftWidth = math.max(10, width - rightWidth);
-    final left = label.length > leftWidth ? label.substring(0, leftWidth) : label;
-    final right = value.length > rightWidth ? value.substring(0, rightWidth) : value;
+    final left = label.length > leftWidth
+        ? label.substring(0, leftWidth)
+        : label;
+    final right = value.length > rightWidth
+        ? value.substring(0, rightWidth)
+        : value;
     return '${left.padRight(leftWidth)}${right.padLeft(rightWidth)}';
   }
 
@@ -3085,7 +3213,8 @@ Write-Output \$preferredPrinter
 
     if (fields.showContactLine && receipt.contactLine.trim().isNotEmpty) {
       lineCount +=
-          1 + _estimateWrappedReceiptLines(receipt.contactLine, charsPerLine: 30);
+          1 +
+          _estimateWrappedReceiptLines(receipt.contactLine, charsPerLine: 30);
     }
 
     if (fields.showLegalText && receipt.legalText.trim().isNotEmpty) {
@@ -3101,10 +3230,12 @@ Write-Output \$preferredPrinter
     }
 
     if (receipt.phoneNumber.trim().isNotEmpty) {
-      lineCount += 1 + _estimateWrappedReceiptLines(
-        'Tel: ${receipt.phoneNumber}',
-        charsPerLine: 30,
-      );
+      lineCount +=
+          1 +
+          _estimateWrappedReceiptLines(
+            'Tel: ${receipt.phoneNumber}',
+            charsPerLine: 30,
+          );
     }
 
     return math.max(180.0, 20.0 + (lineCount * 6.2));
@@ -3117,6 +3248,272 @@ Write-Output \$preferredPrinter
   }) {
     final lines = receiptText.replaceAll('\r', '').split('\n').length;
     return math.max(minHeightMm, 16 + (lines * lineHeightMm));
+  }
+
+  String _buildReceiptPreviewText({
+    required AppSettingsRecord settings,
+    required _ReceiptSaleData sale,
+    int width = 36,
+  }) {
+    final receipt = settings.receipt;
+    final fields = receipt.fields;
+    final localCreatedAt = sale.createdAt.toLocal();
+    final isReturnReceipt = sale.receiptNumber.startsWith('RET-');
+    final lines = <String>[];
+
+    if (isReturnReceipt) {
+      lines.add(_receiptCenter('AMAL: VAZVRAT', width));
+    }
+
+    if (fields.showReceiptNumber) {
+      lines.add(_receiptPair('Chek raqami:', sale.receiptNumber, width: width));
+    }
+    if (fields.showDate) {
+      lines.add(
+        _receiptPair(
+          'Sana:',
+          DateFormat('dd.MM.yyyy').format(localCreatedAt),
+          width: width,
+        ),
+      );
+    }
+    if (fields.showTime) {
+      lines.add(
+        _receiptPair(
+          'Vaqt:',
+          DateFormat('HH:mm').format(localCreatedAt),
+          width: width,
+        ),
+      );
+    }
+    if (fields.showType) {
+      lines.add(
+        _receiptPair(
+          'Amal:',
+          isReturnReceipt ? 'vazvrat' : 'sotuv',
+          width: width,
+        ),
+      );
+    }
+    if (fields.showShift && sale.shiftNumber > 0) {
+      lines.add(_receiptPair('Smena:', '${sale.shiftNumber}', width: width));
+    }
+    if (fields.showCashier) {
+      lines.add(_receiptPair('Kassir:', sale.cashierUsername, width: width));
+    }
+    if (fields.showPaymentType) {
+      lines.add(
+        _receiptPair(
+          'To\'lov:',
+          _paymentTypeLabel(sale.paymentType),
+          width: width,
+        ),
+      );
+    }
+
+    for (final detail in sale.paymentDetails) {
+      lines.add(
+        _receiptPair(detail.label, _formatMoney(detail.amount), width: width),
+      );
+    }
+
+    if (fields.showCustomer && sale.customerName.isNotEmpty) {
+      lines.add('Mijoz: ${sale.customerName}');
+    }
+
+    lines.add(_receiptFill('-', width));
+
+    if (fields.showItemsTable) {
+      for (var i = 0; i < sale.items.length; i++) {
+        final item = sale.items[i];
+        final qtyText = item.quantity.toStringAsFixed(
+          item.quantity == item.quantity.roundToDouble() ? 0 : 2,
+        );
+        lines.add('${i + 1}. ${item.productName}');
+        lines.add('[${item.productCode}]');
+        if (item.variantLabel.isNotEmpty) {
+          lines.add(item.variantLabel);
+        }
+        lines.add(
+          _receiptPair(
+            '$qtyText x ${_formatMoney(item.unitPrice)}',
+            '= ${_formatMoney(item.lineTotal)}',
+            width: width,
+          ),
+        );
+        lines.add('');
+      }
+    }
+
+    lines.add(_receiptFill('-', width));
+
+    if (fields.showTotal) {
+      lines.add(
+        _receiptPair(
+          'Jami summa',
+          _formatMoney(sale.totalAmount),
+          width: width,
+        ),
+      );
+      lines.add(_receiptFill('-', width));
+    }
+
+    if (fields.showContactLine && receipt.contactLine.trim().isNotEmpty) {
+      lines.add(receipt.contactLine.trim());
+    }
+    if (fields.showLegalText && receipt.legalText.trim().isNotEmpty) {
+      lines.add('');
+      lines.add(receipt.legalText.trim());
+    }
+    if (fields.showFooter) {
+      lines.add('');
+      lines.add(
+        receipt.footer.isEmpty ? 'XARIDINGIZ UCHUN RAHMAT' : receipt.footer,
+      );
+    }
+    if (receipt.phoneNumber.trim().isNotEmpty) {
+      lines.add('Tel: ${receipt.phoneNumber}');
+    }
+
+    return lines.join('\n');
+  }
+
+  Future<void> _showReceiptPreviewDialog({
+    required AppSettingsRecord settings,
+    required _ReceiptSaleData sale,
+  }) async {
+    Uint8List? logoBytes;
+    final logoUrl = settings.receipt.logoUrl.trim();
+    if (settings.receipt.fields.showLogo) {
+      if (logoUrl.startsWith('data:image/')) {
+        final commaIndex = logoUrl.indexOf(',');
+        if (commaIndex > -1) {
+          logoBytes = base64Decode(logoUrl.substring(commaIndex + 1));
+        }
+      } else {
+        logoBytes = await rootBundle
+            .load('assets/branding/ataway_receipt_logo.png')
+            .then((data) => data.buffer.asUint8List());
+      }
+    }
+
+    final receipt = settings.receipt;
+    final fields = receipt.fields;
+    final localCreatedAt = sale.createdAt.toLocal();
+    final isReturnReceipt = sale.receiptNumber.startsWith('RET-');
+    const width = 36;
+    final previewText = _buildReceiptPreviewText(
+      settings: settings,
+      sale: sale,
+      width: width,
+    );
+
+    await showDialog<void>(
+      context: context,
+      useRootNavigator: true,
+      barrierDismissible: true,
+      builder: (dialogContext) {
+        return Dialog(
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 18,
+            vertical: 18,
+          ),
+          backgroundColor: Colors.transparent,
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 460, maxHeight: 840),
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+            decoration: BoxDecoration(
+              color: const Color(0xFF17315F),
+              borderRadius: BorderRadius.circular(28),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        sale.receiptNumber.startsWith('RET-')
+                            ? 'Vazvrat cheki'
+                            : 'Chek preview',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 22,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.of(dialogContext).pop(),
+                      icon: const Icon(
+                        Icons.close_rounded,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 18,
+                      vertical: 18,
+                    ),
+                    child: SingleChildScrollView(
+                      child: Column(
+                        children: [
+                          if (logoBytes != null) ...[
+                            Center(
+                              child: Image.memory(
+                                logoBytes,
+                                width: 180,
+                                fit: BoxFit.contain,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                          SizedBox(
+                            width: 320,
+                            child: Text(
+                              previewText,
+                              textAlign: TextAlign.left,
+                              style: const TextStyle(
+                                color: Color(0xFF111111),
+                                fontSize: 15,
+                                fontWeight: FontWeight.w900,
+                                height: 1.45,
+                                fontFamily: 'Courier',
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: SizedBox(
+                    width: 180,
+                    height: 46,
+                    child: _PrimaryActionBox(
+                      label: 'YOPISH',
+                      icon: Icons.check_rounded,
+                      onTap: () => Navigator.of(dialogContext).pop(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   String _formatQty(double value) {
@@ -3141,6 +3538,30 @@ Write-Output \$preferredPrinter
           Expanded(child: Text(label, style: style)),
           const SizedBox(width: 12),
           Text(value, style: style, textAlign: TextAlign.right),
+        ],
+      ),
+    );
+  }
+
+  Widget _receiptPreviewRow(
+    String label,
+    String value, {
+    bool emphasized = false,
+  }) {
+    final style = TextStyle(
+      color: const Color(0xFF111111),
+      fontSize: emphasized ? 18 : 16,
+      fontWeight: emphasized ? FontWeight.w900 : FontWeight.w800,
+      height: 1.35,
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(child: Text(label, style: style)),
+          const SizedBox(width: 14),
+          Text(value, textAlign: TextAlign.right, style: style),
         ],
       ),
     );
@@ -3320,25 +3741,8 @@ Write-Output \$preferredPrinter
         if (updatedSale != null) {
           result = _ReturnResult(
             updatedSale: updatedSale,
-            receipt: _ReceiptSaleData(
-              receiptNumber: 'RET-${sale.receiptNumber}',
-              shiftNumber: sale.shiftNumber,
-              createdAt: DateTime.now(),
-              cashierUsername: sale.cashierUsername,
-              paymentType: selectedReturnPaymentType,
-              paymentDetails: _receiptPaymentDetailsFromValues(
-                cash: selectedReturnPaymentType == 'cash'
-                    ? item.unitPrice * quantity
-                    : 0,
-                card: selectedReturnPaymentType == 'card'
-                    ? item.unitPrice * quantity
-                    : 0,
-                click: selectedReturnPaymentType == 'click'
-                    ? item.unitPrice * quantity
-                    : 0,
-              ),
-              customerName: sale.customerName,
-              totalAmount: item.unitPrice * quantity,
+            receipt: _buildReturnReceiptFromSale(
+              sale: updatedSale,
               items: [
                 _ReceiptSaleItemData(
                   productName: item.productName,
@@ -3352,6 +3756,21 @@ Write-Output \$preferredPrinter
                   lineTotal: item.unitPrice * quantity,
                 ),
               ],
+              fallbackPaymentType: selectedReturnPaymentType,
+              fallbackPaymentDetails: _receiptPaymentDetailsFromValues(
+                cash: selectedReturnPaymentType == 'cash'
+                    ? item.unitPrice * quantity
+                    : 0,
+                card: selectedReturnPaymentType == 'card'
+                    ? item.unitPrice * quantity
+                    : 0,
+                click: selectedReturnPaymentType == 'click'
+                    ? item.unitPrice * quantity
+                    : 0,
+              ),
+              fallbackTotalAmount: item.unitPrice * quantity,
+              fallbackCashierUsername: sale.cashierUsername,
+              fallbackShiftNumber: sale.shiftNumber,
             ),
           );
         }
@@ -5447,37 +5866,80 @@ Write-Output \$preferredPrinter
     return _availableReturnPaymentTypes(entry).first;
   }
 
+  SaleReturnRecord? _latestReturnRecord(SaleRecord sale) {
+    if (sale.returns.isEmpty) return null;
+    final sorted = [...sale.returns]
+      ..sort((a, b) {
+        final aTime = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final bTime = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        return bTime.compareTo(aTime);
+      });
+    return sorted.first;
+  }
+
+  _ReceiptSaleData _buildReturnReceiptFromSale({
+    required SaleRecord sale,
+    required List<_ReceiptSaleItemData> items,
+    required String fallbackPaymentType,
+    required List<_ReceiptPaymentDetail> fallbackPaymentDetails,
+    required double fallbackTotalAmount,
+    required String fallbackCashierUsername,
+    required int fallbackShiftNumber,
+  }) {
+    final latestReturn = _latestReturnRecord(sale);
+    return _ReceiptSaleData(
+      receiptNumber: 'RET-${sale.receiptNumber}',
+      shiftNumber: latestReturn?.shiftNumber ?? fallbackShiftNumber,
+      createdAt: latestReturn?.createdAt ?? DateTime.now(),
+      cashierUsername:
+          (latestReturn?.cashierUsername.trim().isNotEmpty ?? false)
+          ? latestReturn!.cashierUsername
+          : fallbackCashierUsername,
+      paymentType: latestReturn?.paymentType ?? fallbackPaymentType,
+      paymentDetails: latestReturn != null
+          ? _receiptPaymentDetailsFromValues(
+              cash: latestReturn.payments.cash,
+              card: latestReturn.payments.card,
+              click: latestReturn.payments.click,
+            )
+          : fallbackPaymentDetails,
+      customerName: sale.customerName,
+      totalAmount: latestReturn?.totalAmount ?? fallbackTotalAmount,
+      items: items,
+    );
+  }
+
   _ReceiptSaleData _buildReturnReceiptData({
     required _ReturnLookupEntry entry,
     required double quantity,
     required String paymentType,
   }) {
-    return _ReceiptSaleData(
-      receiptNumber: 'RET-${entry.sale.receiptNumber}',
-      shiftNumber: entry.sale.shiftNumber,
-      createdAt: DateTime.now(),
-      cashierUsername: entry.sale.cashierUsername,
-      paymentType: paymentType,
-      paymentDetails: _receiptPaymentDetailsFromValues(
-        cash: paymentType == 'cash' ? entry.item.unitPrice * quantity : 0,
-        card: paymentType == 'card' ? entry.item.unitPrice * quantity : 0,
-        click: paymentType == 'click' ? entry.item.unitPrice * quantity : 0,
+    final lineTotal = entry.item.unitPrice * quantity;
+    final items = [
+      _ReceiptSaleItemData(
+        productName: entry.item.productName,
+        productCode: entry.item.productCode,
+        variantLabel: [
+          if (entry.item.variantSize.isNotEmpty) entry.item.variantSize,
+          if (entry.item.variantColor.isNotEmpty) entry.item.variantColor,
+        ].join(' / '),
+        quantity: quantity,
+        unitPrice: entry.item.unitPrice,
+        lineTotal: lineTotal,
       ),
-      customerName: entry.sale.customerName,
-      totalAmount: entry.item.unitPrice * quantity,
-      items: [
-        _ReceiptSaleItemData(
-          productName: entry.item.productName,
-          productCode: entry.item.productCode,
-          variantLabel: [
-            if (entry.item.variantSize.isNotEmpty) entry.item.variantSize,
-            if (entry.item.variantColor.isNotEmpty) entry.item.variantColor,
-          ].join(' / '),
-          quantity: quantity,
-          unitPrice: entry.item.unitPrice,
-          lineTotal: entry.item.unitPrice * quantity,
-        ),
-      ],
+    ];
+    return _buildReturnReceiptFromSale(
+      sale: entry.sale,
+      items: items,
+      fallbackPaymentType: paymentType,
+      fallbackPaymentDetails: _receiptPaymentDetailsFromValues(
+        cash: paymentType == 'cash' ? lineTotal : 0,
+        card: paymentType == 'card' ? lineTotal : 0,
+        click: paymentType == 'click' ? lineTotal : 0,
+      ),
+      fallbackTotalAmount: lineTotal,
+      fallbackCashierUsername: entry.sale.cashierUsername,
+      fallbackShiftNumber: entry.sale.shiftNumber,
     );
   }
 
@@ -5657,21 +6119,25 @@ Write-Output \$preferredPrinter
             }
 
             String selectedShiftId = '';
-            final sortedSaleTimes = allSales
-                .map((sale) => sale.createdAt?.toLocal())
-                .whereType<DateTime>()
-                .toList()
-              ..sort();
-            DateTime selectedFromAt =
-                sortedSaleTimes.isNotEmpty ? sortedSaleTimes.first : DateTime.now();
-            DateTime selectedToAt =
-                sortedSaleTimes.isNotEmpty ? sortedSaleTimes.last : DateTime.now();
+            final sortedSaleTimes =
+                allSales
+                    .map((sale) => sale.createdAt?.toLocal())
+                    .whereType<DateTime>()
+                    .toList()
+                  ..sort();
+            DateTime selectedFromAt = sortedSaleTimes.isNotEmpty
+                ? sortedSaleTimes.first
+                : DateTime.now();
+            DateTime selectedToAt = sortedSaleTimes.isNotEmpty
+                ? sortedSaleTimes.last
+                : DateTime.now();
 
             return StatefulBuilder(
               builder: (context, setModalState) {
                 final selectedShift = findShiftById(selectedShiftId);
                 final filteredSales = allSales.where((sale) {
-                  if (selectedShift != null && sale.shiftId != selectedShift.id) {
+                  if (selectedShift != null &&
+                      sale.shiftId != selectedShift.id) {
                     return false;
                   }
                   final createdAt = sale.createdAt?.toLocal();
@@ -5850,8 +6316,7 @@ Write-Output \$preferredPrinter
                                                   style: TextStyle(
                                                     color: Color(0xFF0D2D67),
                                                     fontSize: 30,
-                                                    fontWeight:
-                                                        FontWeight.w900,
+                                                    fontWeight: FontWeight.w900,
                                                   ),
                                                 ),
                                                 const SizedBox(height: 4),
@@ -5904,8 +6369,7 @@ Write-Output \$preferredPrinter
                                                   formatShiftOption,
                                               onChanged: (value) {
                                                 setModalState(() {
-                                                  selectedShiftId =
-                                                      value ?? '';
+                                                  selectedShiftId = value ?? '';
                                                 });
                                               },
                                             ),
@@ -5938,7 +6402,8 @@ Write-Output \$preferredPrinter
                                                   if (selectedToAt.isBefore(
                                                     selectedFromAt,
                                                   )) {
-                                                    selectedToAt = selectedFromAt;
+                                                    selectedToAt =
+                                                        selectedFromAt;
                                                   }
                                                 });
                                               },
@@ -5955,8 +6420,7 @@ Write-Output \$preferredPrinter
                                                 final pickedDate =
                                                     await showDatePicker(
                                                       context: context,
-                                                      initialDate:
-                                                          selectedToAt,
+                                                      initialDate: selectedToAt,
                                                       firstDate: DateTime(2020),
                                                       lastDate: DateTime(2100),
                                                     );
@@ -5972,7 +6436,8 @@ Write-Output \$preferredPrinter
                                                   if (selectedToAt.isBefore(
                                                     selectedFromAt,
                                                   )) {
-                                                    selectedFromAt = selectedToAt;
+                                                    selectedFromAt =
+                                                        selectedToAt;
                                                   }
                                                 });
                                               },
@@ -6006,7 +6471,8 @@ Write-Output \$preferredPrinter
                                                   if (selectedToAt.isBefore(
                                                     selectedFromAt,
                                                   )) {
-                                                    selectedToAt = selectedFromAt;
+                                                    selectedToAt =
+                                                        selectedFromAt;
                                                   }
                                                 });
                                               },
@@ -6040,7 +6506,8 @@ Write-Output \$preferredPrinter
                                                   if (selectedToAt.isBefore(
                                                     selectedFromAt,
                                                   )) {
-                                                    selectedFromAt = selectedToAt;
+                                                    selectedFromAt =
+                                                        selectedToAt;
                                                   }
                                                 });
                                               },
@@ -6070,8 +6537,9 @@ Write-Output \$preferredPrinter
                                           ),
                                           decoration: BoxDecoration(
                                             color: const Color(0xFFF6F9FF),
-                                            borderRadius:
-                                                BorderRadius.circular(16),
+                                            borderRadius: BorderRadius.circular(
+                                              16,
+                                            ),
                                             border: Border.all(
                                               color: const Color(0xFFD8E3F2),
                                             ),
@@ -6098,8 +6566,9 @@ Write-Output \$preferredPrinter
                                       const SizedBox(height: 10),
                                       Container(
                                         decoration: BoxDecoration(
-                                          borderRadius:
-                                              BorderRadius.circular(18),
+                                          borderRadius: BorderRadius.circular(
+                                            18,
+                                          ),
                                           border: Border.all(
                                             color: const Color(0xFFC8D7EC),
                                           ),
@@ -6119,14 +6588,10 @@ Write-Output \$preferredPrinter
                                                     Color(0xFF0D2E63),
                                                   ],
                                                 ),
-                                                borderRadius:
-                                                    BorderRadius.only(
-                                                      topLeft: Radius.circular(
-                                                        18,
-                                                      ),
-                                                      topRight:
-                                                          Radius.circular(18),
-                                                    ),
+                                                borderRadius: BorderRadius.only(
+                                                  topLeft: Radius.circular(18),
+                                                  topRight: Radius.circular(18),
+                                                ),
                                               ),
                                               child: const Row(
                                                 children: [
@@ -6195,8 +6660,7 @@ Write-Output \$preferredPrinter
                                               _DailyReportPaymentDataRow(
                                                 row: visibleRows[i],
                                                 showDivider:
-                                                    i !=
-                                                    visibleRows.length - 1,
+                                                    i != visibleRows.length - 1,
                                               ),
                                             _DailyReportPaymentTotalRow(
                                               salesAmount:
@@ -6212,8 +6676,9 @@ Write-Output \$preferredPrinter
                                       const SizedBox(height: 22),
                                       Container(
                                         decoration: BoxDecoration(
-                                          borderRadius:
-                                              BorderRadius.circular(24),
+                                          borderRadius: BorderRadius.circular(
+                                            24,
+                                          ),
                                           border: Border.all(
                                             color: const Color(0xFFC8D7EC),
                                           ),
@@ -6239,9 +6704,7 @@ Write-Output \$preferredPrinter
                                               ),
                                               Container(
                                                 width: 1,
-                                                color: const Color(
-                                                  0xFFD9E3F1,
-                                                ),
+                                                color: const Color(0xFFD9E3F1),
                                               ),
                                               Expanded(
                                                 flex: 7,
@@ -6493,7 +6956,10 @@ Write-Output \$preferredPrinter
         }
 
         final receiptData = _buildReturnReceiptData(
-          entry: entry,
+          entry: _ReturnLookupEntry(
+            sale: updatedSale ?? entry.sale,
+            item: entry.item,
+          ),
           quantity: quantity,
           paymentType: selectedPaymentType,
         );
@@ -6502,6 +6968,13 @@ Write-Output \$preferredPrinter
 
         if (dialogContext.mounted) {
           Navigator.of(dialogContext).pop();
+        }
+        if (mounted) {
+          await Future<void>.delayed(const Duration(milliseconds: 180));
+          await _showReceiptPreviewDialog(
+            settings: settings,
+            sale: receiptData,
+          );
         }
       } catch (error) {
         setModalState(() {
@@ -9280,16 +9753,18 @@ class _ShiftCloseReport {
           returnTotal += item.returnedTotal;
         }
       }
-      if (sale.returnedAmount > 0.0001 || sale.returns.isNotEmpty) {
-        returnReceiptCount += sale.returns.isNotEmpty ? sale.returns.length : 1;
-      }
-      returnCash += sale.returnedPayments.cash;
-      returnCard += sale.returnedPayments.card;
-      returnClick += sale.returnedPayments.click;
-      for (final ret in sale.returns) {
-        if (ret.totalAmount > 0.0001) {
-          returnTotal += 0;
+      if (sale.returns.isNotEmpty) {
+        returnReceiptCount += sale.returns.length;
+        for (final ret in sale.returns) {
+          returnCash += ret.payments.cash;
+          returnCard += ret.payments.card;
+          returnClick += ret.payments.click;
         }
+      } else if (sale.returnedAmount > 0.0001) {
+        returnReceiptCount += 1;
+        returnCash += sale.returnedPayments.cash;
+        returnCard += sale.returnedPayments.card;
+        returnClick += sale.returnedPayments.click;
       }
     }
 
@@ -9464,21 +9939,35 @@ class _DailyShiftReport {
       if (sale.transactionType != 'sale') continue;
 
       salesCount += 1;
+      final hasReturnRows = sale.returns.isNotEmpty;
+      final saleReturnAmount = hasReturnRows
+          ? sale.returns.fold<double>(0, (sum, ret) => sum + ret.totalAmount)
+          : sale.returnedAmount;
+      final saleReturnCash = hasReturnRows
+          ? sale.returns.fold<double>(0, (sum, ret) => sum + ret.payments.cash)
+          : sale.returnedPayments.cash;
+      final saleReturnCard = hasReturnRows
+          ? sale.returns.fold<double>(0, (sum, ret) => sum + ret.payments.card)
+          : sale.returnedPayments.card;
+      final saleReturnClick = hasReturnRows
+          ? sale.returns.fold<double>(0, (sum, ret) => sum + ret.payments.click)
+          : sale.returnedPayments.click;
+
       netRevenue += sale.totalAmount;
-      totalReturnedAmount += sale.returnedAmount;
-      grossRevenue += sale.totalAmount + sale.returnedAmount;
+      totalReturnedAmount += saleReturnAmount;
+      grossRevenue += sale.totalAmount + saleReturnAmount;
 
       netCash += sale.payments.cash;
       netCard += sale.payments.card;
       netClick += sale.payments.click;
 
-      returnCash += sale.returnedPayments.cash;
-      returnCard += sale.returnedPayments.card;
-      returnClick += sale.returnedPayments.click;
+      returnCash += saleReturnCash;
+      returnCard += saleReturnCard;
+      returnClick += saleReturnClick;
 
-      grossCash += sale.payments.cash + sale.returnedPayments.cash;
-      grossCard += sale.payments.card + sale.returnedPayments.card;
-      grossClick += sale.payments.click + sale.returnedPayments.click;
+      grossCash += sale.payments.cash + saleReturnCash;
+      grossCard += sale.payments.card + saleReturnCard;
+      grossClick += sale.payments.click + saleReturnClick;
 
       if (sale.debtAmount > 0) {
         netDebt += sale.debtAmount;
@@ -9777,10 +10266,7 @@ class _DailyReportHeroCard extends StatelessWidget {
           Container(
             width: 64,
             height: 64,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: accent,
-            ),
+            decoration: BoxDecoration(shape: BoxShape.circle, color: accent),
             child: Icon(icon, color: Colors.white, size: 34),
           ),
           const SizedBox(width: 12),
@@ -9841,9 +10327,7 @@ class _DailyReportPaymentDataRow extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         border: showDivider
-            ? const Border(
-                bottom: BorderSide(color: Color(0xFFD7E2F1)),
-              )
+            ? const Border(bottom: BorderSide(color: Color(0xFFD7E2F1)))
             : null,
       ),
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
@@ -10572,7 +11056,11 @@ class _PieceSaleConfig {
   final double piecePrice;
 }
 
-String _normalizeReceiptProductCode(String? value, String? model, String? barcode) {
+String _normalizeReceiptProductCode(
+  String? value,
+  String? model,
+  String? barcode,
+) {
   final direct = (value ?? '').replaceAll(RegExp(r'\D+'), '');
   if (direct.isNotEmpty) {
     final last = direct.length > 4
@@ -10608,7 +11096,9 @@ String _normalizeReceiptNumberFromMap(Map<String, dynamic> sale) {
       : sale['_id']?.toString() ?? '';
   final digits = rawId.replaceAll(RegExp(r'\D+'), '');
   if (digits.isNotEmpty) {
-    final last = digits.length > 6 ? digits.substring(digits.length - 6) : digits;
+    final last = digits.length > 6
+        ? digits.substring(digits.length - 6)
+        : digits;
     return last.padLeft(4, '0');
   }
 

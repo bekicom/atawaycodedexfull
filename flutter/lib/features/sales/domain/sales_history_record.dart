@@ -88,6 +88,9 @@ class SaleReturnRecord {
   const SaleReturnRecord({
     required this.id,
     required this.createdAt,
+    required this.cashierUsername,
+    required this.shiftId,
+    required this.shiftNumber,
     required this.paymentType,
     required this.payments,
     required this.totalAmount,
@@ -95,6 +98,9 @@ class SaleReturnRecord {
 
   final String id;
   final DateTime? createdAt;
+  final String cashierUsername;
+  final String shiftId;
+  final int shiftNumber;
   final String paymentType;
   final SalePaymentsRecord payments;
   final double totalAmount;
@@ -103,6 +109,9 @@ class SaleReturnRecord {
     return SaleReturnRecord(
       id: json['_id']?.toString() ?? '',
       createdAt: DateTime.tryParse(json['createdAt']?.toString() ?? ''),
+      cashierUsername: json['cashierUsername']?.toString() ?? '',
+      shiftId: json['shiftId']?.toString() ?? '',
+      shiftNumber: (json['shiftNumber'] as num?)?.toInt() ?? 0,
       paymentType: json['paymentType']?.toString() ?? '',
       payments: SalePaymentsRecord.fromJson(
         json['payments'] is Map<String, dynamic>
@@ -160,8 +169,9 @@ class SaleRecord {
   bool get hasReturn =>
       returnedAmount > 0.0001 ||
       items.any((item) => item.returnedQuantity > 0.0001);
-  String get receiptNumber =>
-      saleNumber > 0 ? saleNumber.toString().padLeft(6, '0') : _fallbackReceiptNumber(id);
+  String get receiptNumber => saleNumber > 0
+      ? saleNumber.toString().padLeft(6, '0')
+      : _fallbackReceiptNumber(id);
 
   factory SaleRecord.fromJson(Map<String, dynamic> json) {
     final rawItems = (json['items'] as List?) ?? const [];
@@ -283,7 +293,9 @@ double _toDouble(dynamic value) {
 String _normalizeProductCode(String? value, String? model, String? barcode) {
   final direct = (value ?? '').replaceAll(RegExp(r'\D+'), '');
   if (direct.isNotEmpty) {
-    final last = direct.length > 4 ? direct.substring(direct.length - 4) : direct;
+    final last = direct.length > 4
+        ? direct.substring(direct.length - 4)
+        : direct;
     return last.padLeft(4, '0');
   }
   final fromModel = (model ?? '').replaceAll(RegExp(r'\D+'), '');
@@ -295,7 +307,9 @@ String _normalizeProductCode(String? value, String? model, String? barcode) {
   }
   final fallback = (barcode ?? '').replaceAll(RegExp(r'\D+'), '');
   if (fallback.isNotEmpty) {
-    final last = fallback.length > 4 ? fallback.substring(fallback.length - 4) : fallback;
+    final last = fallback.length > 4
+        ? fallback.substring(fallback.length - 4)
+        : fallback;
     return last.padLeft(4, '0');
   }
   return '0000';
@@ -304,7 +318,9 @@ String _normalizeProductCode(String? value, String? model, String? barcode) {
 String _fallbackReceiptNumber(String value) {
   final digits = value.replaceAll(RegExp(r'\D+'), '');
   if (digits.isNotEmpty) {
-    final last = digits.length > 6 ? digits.substring(digits.length - 6) : digits;
+    final last = digits.length > 6
+        ? digits.substring(digits.length - 6)
+        : digits;
     return last.padLeft(4, '0');
   }
 

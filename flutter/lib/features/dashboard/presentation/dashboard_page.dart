@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -17,6 +18,8 @@ import '../../customers/data/customers_repository.dart';
 import '../../customers/domain/customer_record.dart';
 import '../../expenses/presentation/expenses_section.dart';
 import '../../products/presentation/products_section.dart';
+import '../../returns/data/returns_repository.dart';
+import '../../returns/domain/returns_record.dart';
 import '../../returns/presentation/returns_section.dart';
 import '../../cashier/presentation/cashier_page.dart';
 import '../../sales/data/sales_repository.dart';
@@ -2840,12 +2843,14 @@ class _SettingsDirectContentState
 class _SalesViewData {
   const _SalesViewData({
     required this.history,
+    required this.returns,
     required this.settings,
     required this.shifts,
     required this.variantInsights,
   });
 
   final SalesHistoryRecord history;
+  final ReturnsRecord returns;
   final AppSettingsRecord settings;
   final ShiftsListRecord shifts;
   final VariantSalesInsightsRecord variantInsights;
@@ -2854,31 +2859,51 @@ class _SalesViewData {
 class _ShiftComputedTotals {
   const _ShiftComputedTotals({
     required this.totalSalesCount,
+    required this.totalReturnCount,
     required this.totalItemsCount,
     required this.totalAmount,
     required this.totalCash,
     required this.totalCard,
     required this.totalClick,
     required this.totalDebt,
+    required this.totalReturnedAmount,
+    required this.totalReturnedCash,
+    required this.totalReturnedCard,
+    required this.totalReturnedClick,
   });
 
   final int totalSalesCount;
+  final int totalReturnCount;
   final double totalItemsCount;
   final double totalAmount;
   final double totalCash;
   final double totalCard;
   final double totalClick;
   final double totalDebt;
+  final double totalReturnedAmount;
+  final double totalReturnedCash;
+  final double totalReturnedCard;
+  final double totalReturnedClick;
+
+  double get netAmount => totalAmount - totalReturnedAmount;
+  double get netCash => totalCash - totalReturnedCash;
+  double get netCard => totalCard - totalReturnedCard;
+  double get netClick => totalClick - totalReturnedClick;
 
   factory _ShiftComputedTotals.zero() {
     return const _ShiftComputedTotals(
       totalSalesCount: 0,
+      totalReturnCount: 0,
       totalItemsCount: 0,
       totalAmount: 0,
       totalCash: 0,
       totalCard: 0,
       totalClick: 0,
       totalDebt: 0,
+      totalReturnedAmount: 0,
+      totalReturnedCash: 0,
+      totalReturnedCard: 0,
+      totalReturnedClick: 0,
     );
   }
 
@@ -2889,12 +2914,34 @@ class _ShiftComputedTotals {
     );
     return _ShiftComputedTotals(
       totalSalesCount: totalSalesCount + 1,
+      totalReturnCount: totalReturnCount,
       totalItemsCount: totalItemsCount + itemCount,
       totalAmount: totalAmount + sale.totalAmount,
       totalCash: totalCash + sale.payments.cash,
       totalCard: totalCard + sale.payments.card,
       totalClick: totalClick + sale.payments.click,
       totalDebt: totalDebt + sale.debtAmount,
+      totalReturnedAmount: totalReturnedAmount,
+      totalReturnedCash: totalReturnedCash,
+      totalReturnedCard: totalReturnedCard,
+      totalReturnedClick: totalReturnedClick,
+    );
+  }
+
+  _ShiftComputedTotals addReturn(ReturnRecord ret) {
+    return _ShiftComputedTotals(
+      totalSalesCount: totalSalesCount,
+      totalReturnCount: totalReturnCount + 1,
+      totalItemsCount: totalItemsCount,
+      totalAmount: totalAmount,
+      totalCash: totalCash,
+      totalCard: totalCard,
+      totalClick: totalClick,
+      totalDebt: totalDebt,
+      totalReturnedAmount: totalReturnedAmount + ret.totalAmount,
+      totalReturnedCash: totalReturnedCash + ret.payments.cash,
+      totalReturnedCard: totalReturnedCard + ret.payments.card,
+      totalReturnedClick: totalReturnedClick + ret.payments.click,
     );
   }
 }
@@ -2976,20 +3023,30 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
           size: _sizeFilter,
           color: _colorFilter,
         );
+    final returnsFuture = ref
+        .read(returnsRepositoryProvider)
+        .fetchReturns(
+          token: session.token,
+          period: _period,
+          from: _dateFrom,
+          to: _dateTo,
+        );
     final settingsFuture = ref
         .read(settingsRepositoryProvider)
         .fetchSettings(session.token);
     final results = await Future.wait<dynamic>([
       salesFuture,
+      returnsFuture,
       settingsFuture,
       shiftsFuture,
       variantInsightsFuture,
     ]);
     return _SalesViewData(
       history: results[0] as SalesHistoryRecord,
-      settings: results[1] as AppSettingsRecord,
-      shifts: results[2] as ShiftsListRecord,
-      variantInsights: results[3] as VariantSalesInsightsRecord,
+      returns: results[1] as ReturnsRecord,
+      settings: results[2] as AppSettingsRecord,
+      shifts: results[3] as ShiftsListRecord,
+      variantInsights: results[4] as VariantSalesInsightsRecord,
     );
   }
 
@@ -3061,6 +3118,7 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
 
   Future<void> _exportSalesHistoryExcel({
     required SalesHistoryRecord history,
+    required ReturnsRecord returnsData,
     required AppSettingsRecord settings,
     required ShiftsListRecord shifts,
     required List<SaleRecord> visibleSales,
@@ -3075,9 +3133,17 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
     if (saveLocation == null) return;
 
     final shiftsById = {for (final shift in shifts.shifts) shift.id: shift};
+    final visibleReturns = _filterVisibleReturns(
+      returns: returnsData.returns,
+      query: _search,
+      cashierFilter: _cashierFilter,
+      shiftFilter: _shiftFilter,
+      shiftsById: shiftsById,
+    );
     final shiftComputation = _computeShiftData(
       shifts: shifts.shifts,
       sales: visibleSales,
+      returns: visibleReturns,
     );
 
     final totalVisibleAmount = visibleSales.fold<double>(
@@ -3095,6 +3161,10 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
     final totalVisibleClick = visibleSales.fold<double>(
       0,
       (sum, sale) => sum + sale.payments.click,
+    );
+    final totalVisibleReturnedAmount = visibleReturns.fold<double>(
+      0,
+      (sum, ret) => sum + ret.totalAmount,
     );
     final totalVisibleDebt = visibleSales.fold<double>(
       0,
@@ -3124,9 +3194,8 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
     final shiftRows = shifts.shifts.map((shift) {
       final shiftSales = visibleSales.where((sale) {
         if (sale.shiftId == shift.id) return true;
-        final inferredShiftId = shiftComputation.saleToShiftId[_saleComputationKey(
-          sale,
-        )];
+        final inferredShiftId =
+            shiftComputation.saleToShiftId[_saleComputationKey(sale)];
         return inferredShiftId == shift.id;
       }).toList();
       final totals =
@@ -3154,7 +3223,7 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
         'UZCARD': _formatMoney(totals.totalCard, settings),
         'HUMO': _formatMoney(totals.totalClick, settings),
         'Qarz': _formatMoney(totals.totalDebt, settings),
-        'Jami': _formatMoney(totals.totalAmount, settings),
+        'Jami': _formatMoney(totals.netAmount, settings),
         'Foyda': _formatMoney(shiftProfit, settings),
       };
     }).toList();
@@ -3163,7 +3232,9 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
       final resolvedShiftId = sale.shiftId.isNotEmpty
           ? sale.shiftId
           : (shiftComputation.saleToShiftId[_saleComputationKey(sale)] ?? '');
-      final shift = resolvedShiftId.isEmpty ? null : shiftsById[resolvedShiftId];
+      final shift = resolvedShiftId.isEmpty
+          ? null
+          : shiftsById[resolvedShiftId];
       final isDebtPayment =
           sale.transactionType == 'debt_payment' ||
           sale.paymentType == 'debt_payment';
@@ -3297,7 +3368,7 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
       <div>UZCARD: ${_escapeHtml(_formatMoney(totalVisibleCard, settings))}</div>
       <div>HUMO: ${_escapeHtml(_formatMoney(totalVisibleClick, settings))}</div>
       <div>Qarz: ${_escapeHtml(_formatMoney(totalVisibleDebt, settings))}</div>
-      <div>Jami tushum: ${_escapeHtml(_formatMoney(totalVisibleAmount, settings))}</div>
+      <div>Jami tushum: ${_escapeHtml(_formatMoney(totalVisibleAmount - totalVisibleReturnedAmount, settings))}</div>
       <div>Jami foyda: ${_escapeHtml(_formatMoney(totalVisibleProfit, settings))}</div>
     </div>
   </div>
@@ -3334,16 +3405,68 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
     return '${sale.id}|${sale.createdAt?.millisecondsSinceEpoch ?? 0}|${sale.paymentType}|${sale.totalAmount.toStringAsFixed(2)}';
   }
 
-  bool _isSaleInShiftWindow(DateTime? saleAt, ShiftRecord shift) {
-    if (saleAt == null || shift.openedAt == null) return false;
+  bool _isTimeInShiftWindow(DateTime? value, ShiftRecord shift) {
+    if (value == null || shift.openedAt == null) return false;
     final openedAt = shift.openedAt!;
-    final closedAt = shift.closedAt ?? DateTime.now().add(const Duration(seconds: 1));
-    return !saleAt.isBefore(openedAt) && !saleAt.isAfter(closedAt);
+    final closedAt =
+        shift.closedAt ?? DateTime.now().add(const Duration(seconds: 1));
+    return !value.isBefore(openedAt) && !value.isAfter(closedAt);
+  }
+
+  bool _isSaleInShiftWindow(DateTime? saleAt, ShiftRecord shift) =>
+      _isTimeInShiftWindow(saleAt, shift);
+
+  bool _isReturnInShiftWindow(DateTime? returnAt, ShiftRecord shift) =>
+      _isTimeInShiftWindow(returnAt, shift);
+
+  bool _returnMatchesShift(ReturnRecord ret, ShiftRecord shift) {
+    if (ret.shiftId.isNotEmpty && ret.shiftId == shift.id) return true;
+    if (ret.cashierUsername.trim().toLowerCase() !=
+        shift.cashierUsername.trim().toLowerCase()) {
+      return false;
+    }
+    if (ret.shiftNumber > 0 && shift.shiftNumber == ret.shiftNumber) {
+      return true;
+    }
+    return _isReturnInShiftWindow(ret.returnCreatedAt, shift);
+  }
+
+  List<ReturnRecord> _filterVisibleReturns({
+    required List<ReturnRecord> returns,
+    required String query,
+    required String cashierFilter,
+    required String shiftFilter,
+    required Map<String, ShiftRecord> shiftsById,
+  }) {
+    final normalizedQuery = query.trim().toLowerCase();
+    final selectedShift = shiftFilter.isEmpty ? null : shiftsById[shiftFilter];
+
+    return returns.where((ret) {
+      if (cashierFilter.isNotEmpty && ret.cashierUsername != cashierFilter) {
+        return false;
+      }
+
+      if (selectedShift != null && !_returnMatchesShift(ret, selectedShift)) {
+        return false;
+      }
+
+      if (normalizedQuery.isEmpty) return true;
+
+      final text = [
+        ret.cashierUsername,
+        ret.paymentType,
+        ret.note,
+        ret.shiftNumber > 0 ? '#${ret.shiftNumber}' : '',
+        ...ret.items.map((item) => item.productName),
+      ].join(' ').toLowerCase();
+      return text.contains(normalizedQuery);
+    }).toList();
   }
 
   _ShiftComputation _computeShiftData({
     required List<ShiftRecord> shifts,
     required List<SaleRecord> sales,
+    required List<ReturnRecord> returns,
   }) {
     final totalsByShiftId = <String, _ShiftComputedTotals>{
       for (final shift in shifts) shift.id: _ShiftComputedTotals.zero(),
@@ -3376,7 +3499,9 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
         final candidates = shiftsByCashier[cashierKey] ?? const <ShiftRecord>[];
         if (candidates.isNotEmpty && sale.createdAt != null) {
           final preferred = sale.shiftNumber > 0
-              ? candidates.where((shift) => shift.shiftNumber == sale.shiftNumber).toList()
+              ? candidates
+                    .where((shift) => shift.shiftNumber == sale.shiftNumber)
+                    .toList()
               : candidates;
           final pool = preferred.isNotEmpty ? preferred : candidates;
           for (final shift in pool) {
@@ -3391,8 +3516,40 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
       if (matchedShift == null) continue;
       final saleKey = _saleComputationKey(sale);
       saleToShiftId[saleKey] = matchedShift.id;
-      final current = totalsByShiftId[matchedShift.id] ?? _ShiftComputedTotals.zero();
+      final current =
+          totalsByShiftId[matchedShift.id] ?? _ShiftComputedTotals.zero();
       totalsByShiftId[matchedShift.id] = current.addSale(sale);
+    }
+
+    for (final ret in returns) {
+      ShiftRecord? matchedShift;
+      if (ret.shiftId.isNotEmpty) {
+        matchedShift = shiftsById[ret.shiftId];
+      }
+
+      if (matchedShift == null) {
+        final cashierKey = ret.cashierUsername.trim().toLowerCase();
+        final candidates = shiftsByCashier[cashierKey] ?? const <ShiftRecord>[];
+        if (candidates.isNotEmpty) {
+          final preferred = ret.shiftNumber > 0
+              ? candidates
+                    .where((shift) => shift.shiftNumber == ret.shiftNumber)
+                    .toList()
+              : candidates;
+          final pool = preferred.isNotEmpty ? preferred : candidates;
+          for (final shift in pool) {
+            if (_returnMatchesShift(ret, shift)) {
+              matchedShift = shift;
+              break;
+            }
+          }
+        }
+      }
+
+      if (matchedShift == null) continue;
+      final current =
+          totalsByShiftId[matchedShift.id] ?? _ShiftComputedTotals.zero();
+      totalsByShiftId[matchedShift.id] = current.addReturn(ret);
     }
 
     return _ShiftComputation(
@@ -3521,29 +3678,232 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                                 ],
                               ),
                               const SizedBox(height: 10),
-                              Wrap(
-                                spacing: 18,
-                                runSpacing: 8,
-                                children: [
-                                  Text(
-                                    'Naqd: ${_formatMoney(totals.totalCash, settings)}',
-                                  ),
-                                  Text(
-                                    'UZCARD: ${_formatMoney(totals.totalCard, settings)}',
-                                  ),
-                                  Text(
-                                    'HUMO: ${_formatMoney(totals.totalClick, settings)}',
-                                  ),
-                                  Text(
-                                    'Qarz: ${_formatMoney(totals.totalDebt, settings)}',
-                                  ),
-                                  Text(
-                                    'Jami: ${_formatMoney(totals.totalAmount, settings)}',
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w800,
+                              Text(
+                                'Umumiy summa: ${_formatMoney(totals.netAmount, settings)}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              Container(
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF8FBFF),
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                child: Column(
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 14,
+                                        vertical: 12,
+                                      ),
+                                      decoration: const BoxDecoration(
+                                        color: Color(0xFF173F82),
+                                        borderRadius: BorderRadius.only(
+                                          topLeft: Radius.circular(14),
+                                          topRight: Radius.circular(14),
+                                        ),
+                                      ),
+                                      child: const Row(
+                                        children: [
+                                          Expanded(
+                                            flex: 24,
+                                            child: Text(
+                                              'TO‘LOV TURI',
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 19,
+                                            child: Text(
+                                              'SAVDO',
+                                              textAlign: TextAlign.center,
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 19,
+                                            child: Text(
+                                              'QAYTARISH',
+                                              textAlign: TextAlign.center,
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 19,
+                                            child: Text(
+                                              'JAMI',
+                                              textAlign: TextAlign.center,
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
                                     ),
-                                  ),
-                                ],
+                                    _CompactShiftPaymentRow(
+                                      label: 'NAQD',
+                                      sales: _formatMoney(
+                                        totals.totalCash,
+                                        settings,
+                                      ),
+                                      returns: _formatMoney(
+                                        totals.totalReturnedCash,
+                                        settings,
+                                      ),
+                                      net: _formatMoney(
+                                        totals.netCash,
+                                        settings,
+                                      ),
+                                      accent: const Color(0xFF35B35C),
+                                      icon: Icons.payments_rounded,
+                                      hasReturn:
+                                          totals.totalReturnedCash > 0.0001,
+                                    ),
+                                    _CompactShiftPaymentRow(
+                                      label: 'UZCARD',
+                                      sales: _formatMoney(
+                                        totals.totalCard,
+                                        settings,
+                                      ),
+                                      returns: _formatMoney(
+                                        totals.totalReturnedCard,
+                                        settings,
+                                      ),
+                                      net: _formatMoney(
+                                        totals.netCard,
+                                        settings,
+                                      ),
+                                      accent: const Color(0xFF1E62B7),
+                                      icon: Icons.credit_card_rounded,
+                                      brand: _DashboardBrand.uzcard,
+                                      hasReturn:
+                                          totals.totalReturnedCard > 0.0001,
+                                    ),
+                                    _CompactShiftPaymentRow(
+                                      label: 'HUMO',
+                                      sales: _formatMoney(
+                                        totals.totalClick,
+                                        settings,
+                                      ),
+                                      returns: _formatMoney(
+                                        totals.totalReturnedClick,
+                                        settings,
+                                      ),
+                                      net: _formatMoney(
+                                        totals.netClick,
+                                        settings,
+                                      ),
+                                      accent: const Color(0xFF0F8D3F),
+                                      icon:
+                                          Icons.account_balance_wallet_rounded,
+                                      brand: _DashboardBrand.humo,
+                                      hasReturn:
+                                          totals.totalReturnedClick > 0.0001,
+                                    ),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 14,
+                                        vertical: 12,
+                                      ),
+                                      decoration: const BoxDecoration(
+                                        color: Color(0xFFEAF1FB),
+                                        borderRadius: BorderRadius.only(
+                                          bottomLeft: Radius.circular(14),
+                                          bottomRight: Radius.circular(14),
+                                        ),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          const Expanded(
+                                            flex: 24,
+                                            child: Text(
+                                              'JAMI',
+                                              style: TextStyle(
+                                                color: Color(0xFF173F82),
+                                                fontSize: 14,
+                                                fontWeight: FontWeight.w900,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 19,
+                                            child: Text(
+                                              _formatMoney(
+                                                totals.totalCash +
+                                                    totals.totalCard +
+                                                    totals.totalClick,
+                                                settings,
+                                              ),
+                                              textAlign: TextAlign.center,
+                                              style: const TextStyle(
+                                                color: Color(0xFF173F82),
+                                                fontSize: 14,
+                                                fontWeight: FontWeight.w900,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 19,
+                                            child: Text(
+                                              _formatMoney(
+                                                totals.totalReturnedAmount,
+                                                settings,
+                                              ),
+                                              textAlign: TextAlign.center,
+                                              style: const TextStyle(
+                                                color: Color(0xFFD92E27),
+                                                fontSize: 14,
+                                                fontWeight: FontWeight.w900,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 19,
+                                            child: Text(
+                                              _formatMoney(
+                                                totals.netAmount,
+                                                settings,
+                                              ),
+                                              textAlign: TextAlign.center,
+                                              style: const TextStyle(
+                                                color: Color(0xFF0F8D3F),
+                                                fontSize: 14,
+                                                fontWeight: FontWeight.w900,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                'Jami summa: ${_formatMoney(totals.netCash + totals.netCard + totals.netClick, settings)}',
+                                style: const TextStyle(
+                                  color: Color(0xFFFFB2AB),
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w800,
+                                ),
                               ),
                             ],
                           ),
@@ -3583,6 +3943,7 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
         final data = snapshot.data!;
         final settings = data.settings;
         final history = data.history;
+        final returnsData = data.returns;
         final shifts = data.shifts;
         final variantInsights = data.variantInsights;
         final shiftsById = {for (final shift in shifts.shifts) shift.id: shift};
@@ -3603,6 +3964,7 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
         final shiftComputation = _computeShiftData(
           shifts: shifts.shifts,
           sales: history.sales,
+          returns: returnsData.returns,
         );
         final visibleSales = query.isEmpty
             ? history.sales
@@ -3616,13 +3978,100 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
                 ].join(' ').toLowerCase();
                 return text.contains(query);
               }).toList();
+        final visibleReturns = _filterVisibleReturns(
+          returns: returnsData.returns,
+          query: query,
+          cashierFilter: _cashierFilter,
+          shiftFilter: _shiftFilter,
+          shiftsById: shiftsById,
+        );
         final totalPages = visibleSales.isEmpty
             ? 1
             : (visibleSales.length / _pageSize).ceil();
-        final totalReturnedAmount = visibleSales.fold<double>(
+        final grossCash = visibleSales.fold<double>(
           0,
-          (sum, sale) => sum + sale.returnedAmount,
+          (sum, sale) => sum + sale.payments.cash,
         );
+        final grossCard = visibleSales.fold<double>(
+          0,
+          (sum, sale) => sum + sale.payments.card,
+        );
+        final grossClick = visibleSales.fold<double>(
+          0,
+          (sum, sale) => sum + sale.payments.click,
+        );
+        final returnCash = visibleReturns.fold<double>(
+          0,
+          (sum, ret) => sum + ret.payments.cash,
+        );
+        final returnCard = visibleReturns.fold<double>(
+          0,
+          (sum, ret) => sum + ret.payments.card,
+        );
+        final returnClick = visibleReturns.fold<double>(
+          0,
+          (sum, ret) => sum + ret.payments.click,
+        );
+        final totalReturnedAmount = returnCash + returnCard + returnClick;
+        final netCash = grossCash - returnCash;
+        final netCard = grossCard - returnCard;
+        final netClick = grossClick - returnClick;
+        final grossCollection = grossCash + grossCard + grossClick;
+        final netCollection = netCash + netCard + netClick;
+        final totalVisibleItems = visibleSales.fold<double>(
+          0,
+          (sum, sale) =>
+              sum +
+              sale.items.fold<double>(
+                0,
+                (itemSum, item) => itemSum + _leftQty(item),
+              ),
+        );
+        final totalVisibleSaleCount = visibleSales.length;
+        final averageCheck = totalVisibleSaleCount == 0
+            ? 0.0
+            : netCollection / totalVisibleSaleCount;
+        final returnOperations = visibleReturns.length;
+        final maxTicket = visibleSales.fold<double>(
+          0,
+          (sum, sale) => math.max(sum, sale.totalAmount + sale.returnedAmount),
+        );
+        final cashierRevenue = <String, double>{};
+        final cashierCount = <String, int>{};
+        for (final sale in visibleSales) {
+          cashierRevenue.update(
+            sale.cashierUsername,
+            (value) => value + sale.totalAmount,
+            ifAbsent: () => sale.totalAmount,
+          );
+          cashierCount.update(
+            sale.cashierUsername,
+            (value) => value + 1,
+            ifAbsent: () => 1,
+          );
+        }
+        String topCashier = '-';
+        double topCashierRevenue = 0;
+        int topCashierSales = 0;
+        for (final entry in cashierRevenue.entries) {
+          if (entry.value > topCashierRevenue) {
+            topCashier = entry.key;
+            topCashierRevenue = entry.value;
+            topCashierSales = cashierCount[entry.key] ?? 0;
+          }
+        }
+        final visibleDates = [
+          ...visibleSales
+              .map((sale) => sale.createdAt?.toLocal())
+              .whereType<DateTime>(),
+          ...visibleReturns
+              .map((ret) => ret.returnCreatedAt?.toLocal())
+              .whereType<DateTime>(),
+        ].toList()..sort();
+        final reportRangeText = visibleDates.isEmpty
+            ? '${_dateFrom.isEmpty ? '-' : _dateFrom} - ${_dateTo.isEmpty ? '-' : _dateTo}'
+            : '${DateFormat('dd.MM.yyyy HH:mm').format(visibleDates.first)} - ${DateFormat('dd.MM.yyyy HH:mm').format(visibleDates.last)}';
+        final reportNow = DateTime.now();
         final safePage = _page.clamp(1, totalPages);
         final start = (safePage - 1) * _pageSize;
         final end = (start + _pageSize).clamp(0, visibleSales.length);
@@ -3655,919 +4104,1354 @@ class _SalesDirectContentState extends ConsumerState<_SalesDirectContent> {
           padding: const EdgeInsets.all(16),
           child: DefaultTextStyle.merge(
             style: const TextStyle(color: Color(0xFF183153)),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: ListView(
+              padding: EdgeInsets.zero,
               children: [
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                for (final option in const [
-                  ('today', '1 kunlik'),
-                  ('yesterday', 'Kecha'),
-                  ('7d', '7 kun'),
-                  ('30d', '30 kun'),
-                  ('all', 'Hammasi'),
-                ])
-                  ChoiceChip(
-                    label: Text(option.$2),
-                    selected: _period == option.$1,
-                    onSelected: (_) {
-                      setState(() {
-                        _period = option.$1;
-                        _page = 1;
-                      });
-                      _reload();
-                    },
-                  ),
-                SizedBox(
-                  width: 170,
-                  child: TextField(
-                    decoration: const InputDecoration(
-                      hintText: 'Qidirish...',
-                      prefixIcon: Icon(Icons.search_rounded),
-                    ),
-                    onChanged: (value) {
-                      setState(() {
-                        _search = value;
-                        _page = 1;
-                      });
-                    },
-                  ),
-                ),
-                SizedBox(
-                  width: 170,
-                  child: DropdownButtonFormField<String>(
-                    value: _cashierFilter.isEmpty ? null : _cashierFilter,
-                    decoration: const InputDecoration(labelText: 'Kassir'),
-                    items: [
-                      const DropdownMenuItem<String>(
-                        value: '',
-                        child: Text('Barcha kassalar'),
-                      ),
-                      ...cashierOptions.map(
-                        (cashier) => DropdownMenuItem<String>(
-                          value: cashier,
-                          child: Text(cashier),
-                        ),
+                Container(
+                  padding: const EdgeInsets.fromLTRB(22, 22, 22, 18),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(color: const Color(0xFFD6E2F3)),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x120F2747),
+                        blurRadius: 22,
+                        offset: Offset(0, 10),
                       ),
                     ],
-                    onChanged: (value) {
-                      setState(() {
-                        _cashierFilter = value ?? '';
-                        _shiftFilter = '';
-                        _sizeFilter = '';
-                        _colorFilter = '';
-                        _page = 1;
-                      });
-                      _reload();
-                    },
                   ),
-                ),
-                SizedBox(
-                  width: 190,
-                  child: DropdownButtonFormField<String>(
-                    value: _shiftFilter.isEmpty ? null : _shiftFilter,
-                    decoration: const InputDecoration(labelText: 'Smena'),
-                    selectedItemBuilder: (context) {
-                      return [
-                        const Text(
-                          'Barcha smenalar',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        ...shifts.shifts.map(
-                          (shift) => Text(
-                            '#${shift.shiftNumber} | ${shift.cashierUsername}',
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ];
-                    },
-                    items: [
-                      const DropdownMenuItem<String>(
-                        value: '',
-                        child: Text('Barcha smenalar'),
-                      ),
-                      ...shifts.shifts.map(
-                        (shift) => DropdownMenuItem<String>(
-                          value: shift.id,
-                          child: Text(
-                            '#${shift.shiftNumber} | ${shift.cashierUsername}',
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ),
-                    ],
-                    onChanged: (value) {
-                      setState(() {
-                        _shiftFilter = value ?? '';
-                        _page = 1;
-                      });
-                      _reload();
-                    },
-                  ),
-                ),
-                SizedBox(
-                  width: 150,
-                  child: TextField(
-                    controller: TextEditingController(text: _dateFrom)
-                      ..selection = TextSelection.fromPosition(
-                        TextPosition(offset: _dateFrom.length),
-                      ),
-                    decoration: const InputDecoration(labelText: 'Dan'),
-                    readOnly: true,
-                    onTap: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        firstDate: DateTime(2020),
-                        lastDate: DateTime(2100),
-                        initialDate:
-                            DateTime.tryParse(_dateFrom) ?? DateTime.now(),
-                      );
-                      if (picked == null) return;
-                      setState(() {
-                        _period = 'all';
-                        _dateFrom = DateFormat('yyyy-MM-dd').format(picked);
-                        _page = 1;
-                      });
-                      _reload();
-                    },
-                  ),
-                ),
-                SizedBox(
-                  width: 150,
-                  child: TextField(
-                    controller: TextEditingController(text: _dateTo)
-                      ..selection = TextSelection.fromPosition(
-                        TextPosition(offset: _dateTo.length),
-                      ),
-                    decoration: const InputDecoration(labelText: 'Gacha'),
-                    readOnly: true,
-                    onTap: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        firstDate: DateTime(2020),
-                        lastDate: DateTime(2100),
-                        initialDate:
-                            DateTime.tryParse(_dateTo) ?? DateTime.now(),
-                      );
-                      if (picked == null) return;
-                      setState(() {
-                        _period = 'all';
-                        _dateTo = DateFormat('yyyy-MM-dd').format(picked);
-                        _page = 1;
-                      });
-                      _reload();
-                    },
-                  ),
-                ),
-                SizedBox(
-                  height: 48,
-                  child: FilledButton.icon(
-                    onPressed: () async {
-                      await _exportSalesHistoryExcel(
-                        history: history,
-                        settings: settings,
-                        shifts: shifts,
-                        visibleSales: visibleSales,
-                      );
-                    },
-                    icon: const Icon(Icons.download_rounded),
-                    label: const Text('Excel'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                _SummaryCard(
-                  label: 'Savdolar',
-                  value: '${history.summary.totalSales}',
-                  icon: Icons.receipt_long_rounded,
-                  accent: const Color(0xFF1E62B7),
-                ),
-                _SummaryCard(
-                  label: 'Kassaga tushgan',
-                  value: _formatMoney(
-                    history.summary.totalCollection,
-                    settings,
-                  ),
-                  icon: Icons.account_balance_wallet_rounded,
-                  accent: const Color(0xFF2CA857),
-                ),
-                _SummaryCard(
-                  label: 'Vazvrat summasi',
-                  value: _formatMoney(totalReturnedAmount, settings),
-                  icon: Icons.assignment_return_rounded,
-                  accent: const Color(0xFFE24A3B),
-                ),
-                _SummaryCard(
-                  label: 'UZCARD',
-                  value: _formatMoney(history.summary.totalCard, settings),
-                  brand: _DashboardBrand.uzcard,
-                ),
-                _SummaryCard(
-                  label: 'Naqd',
-                  value: _formatMoney(history.summary.totalCash, settings),
-                  icon: Icons.payments_rounded,
-                  accent: const Color(0xFF2CA857),
-                ),
-                _SummaryCard(
-                  label: 'HUMO',
-                  value: _formatMoney(history.summary.totalClick, settings),
-                  brand: _DashboardBrand.humo,
-                ),
-                _SummaryCard(
-                  label: 'Tannarx / Foyda',
-                  value:
-                      '${_formatMoney(history.summary.totalExpense, settings)} / ${_formatMoney(history.summary.totalProfit, settings)}',
-                  icon: Icons.query_stats_rounded,
-                  accent: const Color(0xFF7D56F4),
-                ),
-                _SummaryCard(
-                  label: 'Smenalar',
-                  value: '${shifts.summary.totalShifts}',
-                  icon: Icons.layers_rounded,
-                  accent: const Color(0xFF1E62B7),
-                ),
-                _SummaryCard(
-                  label: 'Ochiq / Yopiq',
-                  value:
-                      '${shifts.summary.openShifts} / ${shifts.summary.closedShifts}',
-                  icon: Icons.sync_alt_rounded,
-                  accent: const Color(0xFF4E647D),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            if (settings.variantInsightsEnabled) ...[
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFFD6E2F3)),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x120F2747),
-                      blurRadius: 16,
-                      offset: Offset(0, 8),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Expanded(
-                          child: Text(
-                            'Razmer va rang bo‘yicha sotuv statistikasi',
-                            style: TextStyle(
-                              color: Color(0xFF163E7C),
-                              fontSize: 18,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                        ),
-                        SizedBox(
-                          width: 160,
-                          child: DropdownButtonFormField<String>(
-                            value: _sizeFilter.isEmpty ? null : _sizeFilter,
-                            decoration: const InputDecoration(
-                              labelText: 'Razmer',
-                            ),
-                            items: [
-                              const DropdownMenuItem<String>(
-                                value: '',
-                                child: Text('Barcha razmer'),
-                              ),
-                              ...variantInsights.availableSizes.map(
-                                (size) => DropdownMenuItem<String>(
-                                  value: size,
-                                  child: Text(size),
-                                ),
-                              ),
-                            ],
-                            onChanged: (value) {
-                              setState(() {
-                                _sizeFilter = value ?? '';
-                              });
-                              _reload();
-                            },
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        SizedBox(
-                          width: 170,
-                          child: DropdownButtonFormField<String>(
-                            value: _colorFilter.isEmpty ? null : _colorFilter,
-                            decoration: const InputDecoration(
-                              labelText: 'Rang',
-                            ),
-                            items: [
-                              const DropdownMenuItem<String>(
-                                value: '',
-                                child: Text('Barcha ranglar'),
-                              ),
-                              ...variantInsights.availableColors.map(
-                                (color) => DropdownMenuItem<String>(
-                                  value: color,
-                                  child: Text(color),
-                                ),
-                              ),
-                            ],
-                            onChanged: (value) {
-                              setState(() {
-                                _colorFilter = value ?? '';
-                              });
-                              _reload();
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 14),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      children: [
-                        _SummaryCard(
-                          label: 'Variant savdo soni',
-                          value: variantInsights.summary.totalQuantity
-                              .toStringAsFixed(0),
-                        ),
-                        _SummaryCard(
-                          label: 'Variant tushumi',
-                          value: _formatMoney(
-                            variantInsights.summary.totalRevenue,
-                            settings,
-                          ),
-                        ),
-                        _SummaryCard(
-                          label: 'Ko‘p sotilgan kiyim',
-                          value:
-                              variantInsights.summary.topProduct.label.isEmpty
-                              ? '-'
-                              : variantInsights.summary.topProduct.label,
-                        ),
-                        _SummaryCard(
-                          label: 'Ko‘p sotilgan razmer',
-                          value: variantInsights.summary.topSize.label.isEmpty
-                              ? '-'
-                              : '${variantInsights.summary.topSize.label} (${variantInsights.summary.topSize.quantity.toStringAsFixed(0)})',
-                        ),
-                        _SummaryCard(
-                          label: 'Ko‘p sotilgan rang',
-                          value: variantInsights.summary.topColor.label.isEmpty
-                              ? '-'
-                              : '${variantInsights.summary.topColor.label} (${variantInsights.summary.topColor.quantity.toStringAsFixed(0)})',
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FBFF),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: const Color(0xFFD6E2F3)),
-                      ),
-                      child: Column(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 12,
+                          for (final option in const [
+                            ('today', '1 kunlik'),
+                            ('yesterday', 'Kecha'),
+                            ('7d', '7 kun'),
+                            ('30d', '30 kun'),
+                            ('all', 'Hammasi'),
+                          ])
+                            ChoiceChip(
+                              label: Text(option.$2),
+                              selected: _period == option.$1,
+                              onSelected: (_) {
+                                setState(() {
+                                  _period = option.$1;
+                                  _page = 1;
+                                });
+                                _reload();
+                              },
                             ),
-                            decoration: const BoxDecoration(
-                              color: Color(0xFF365892),
-                              borderRadius: BorderRadius.only(
-                                topLeft: Radius.circular(14),
-                                topRight: Radius.circular(14),
+                          SizedBox(
+                            width: 170,
+                            child: TextField(
+                              decoration: const InputDecoration(
+                                hintText: 'Qidirish...',
+                                prefixIcon: Icon(Icons.search_rounded),
                               ),
+                              onChanged: (value) {
+                                setState(() {
+                                  _search = value;
+                                  _page = 1;
+                                });
+                              },
                             ),
-                            child: const Row(
+                          ),
+                          SizedBox(
+                            width: 170,
+                            child: DropdownButtonFormField<String>(
+                              value: _cashierFilter.isEmpty
+                                  ? null
+                                  : _cashierFilter,
+                              decoration: const InputDecoration(
+                                labelText: 'Kassir',
+                              ),
+                              items: [
+                                const DropdownMenuItem<String>(
+                                  value: '',
+                                  child: Text('Barcha kassalar'),
+                                ),
+                                ...cashierOptions.map(
+                                  (cashier) => DropdownMenuItem<String>(
+                                    value: cashier,
+                                    child: Text(cashier),
+                                  ),
+                                ),
+                              ],
+                              onChanged: (value) {
+                                setState(() {
+                                  _cashierFilter = value ?? '';
+                                  _shiftFilter = '';
+                                  _sizeFilter = '';
+                                  _colorFilter = '';
+                                  _page = 1;
+                                });
+                                _reload();
+                              },
+                            ),
+                          ),
+                          SizedBox(
+                            width: 190,
+                            child: DropdownButtonFormField<String>(
+                              value: _shiftFilter.isEmpty ? null : _shiftFilter,
+                              decoration: const InputDecoration(
+                                labelText: 'Smena',
+                              ),
+                              selectedItemBuilder: (context) {
+                                return [
+                                  const Text(
+                                    'Barcha smenalar',
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  ...shifts.shifts.map(
+                                    (shift) => Text(
+                                      '#${shift.shiftNumber} | ${shift.cashierUsername}',
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ];
+                              },
+                              items: [
+                                const DropdownMenuItem<String>(
+                                  value: '',
+                                  child: Text('Barcha smenalar'),
+                                ),
+                                ...shifts.shifts.map(
+                                  (shift) => DropdownMenuItem<String>(
+                                    value: shift.id,
+                                    child: Text(
+                                      '#${shift.shiftNumber} | ${shift.cashierUsername}',
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              onChanged: (value) {
+                                setState(() {
+                                  _shiftFilter = value ?? '';
+                                  _page = 1;
+                                });
+                                _reload();
+                              },
+                            ),
+                          ),
+                          SizedBox(
+                            width: 150,
+                            child: TextField(
+                              controller: TextEditingController(text: _dateFrom)
+                                ..selection = TextSelection.fromPosition(
+                                  TextPosition(offset: _dateFrom.length),
+                                ),
+                              decoration: const InputDecoration(
+                                labelText: 'Dan',
+                              ),
+                              readOnly: true,
+                              onTap: () async {
+                                final picked = await showDatePicker(
+                                  context: context,
+                                  firstDate: DateTime(2020),
+                                  lastDate: DateTime(2100),
+                                  initialDate:
+                                      DateTime.tryParse(_dateFrom) ??
+                                      DateTime.now(),
+                                );
+                                if (picked == null) return;
+                                setState(() {
+                                  _period = 'all';
+                                  _dateFrom = DateFormat(
+                                    'yyyy-MM-dd',
+                                  ).format(picked);
+                                  _page = 1;
+                                });
+                                _reload();
+                              },
+                            ),
+                          ),
+                          SizedBox(
+                            width: 150,
+                            child: TextField(
+                              controller: TextEditingController(text: _dateTo)
+                                ..selection = TextSelection.fromPosition(
+                                  TextPosition(offset: _dateTo.length),
+                                ),
+                              decoration: const InputDecoration(
+                                labelText: 'Gacha',
+                              ),
+                              readOnly: true,
+                              onTap: () async {
+                                final picked = await showDatePicker(
+                                  context: context,
+                                  firstDate: DateTime(2020),
+                                  lastDate: DateTime(2100),
+                                  initialDate:
+                                      DateTime.tryParse(_dateTo) ??
+                                      DateTime.now(),
+                                );
+                                if (picked == null) return;
+                                setState(() {
+                                  _period = 'all';
+                                  _dateTo = DateFormat(
+                                    'yyyy-MM-dd',
+                                  ).format(picked);
+                                  _page = 1;
+                                });
+                                _reload();
+                              },
+                            ),
+                          ),
+                          SizedBox(
+                            height: 48,
+                            child: FilledButton.icon(
+                              onPressed: () async {
+                                await _exportSalesHistoryExcel(
+                                  history: history,
+                                  returnsData: data.returns,
+                                  settings: settings,
+                                  shifts: shifts,
+                                  visibleSales: visibleSales,
+                                );
+                              },
+                              icon: const Icon(Icons.download_rounded),
+                              label: const Text('Excel'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 22),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            flex: 3,
+                            child: Row(
                               children: [
-                                Expanded(flex: 18, child: Text('Kiyim')),
-                                Expanded(flex: 8, child: Text('Razmer')),
-                                Expanded(flex: 10, child: Text('Rang')),
-                                Expanded(flex: 8, child: Text('Soni')),
-                                Expanded(flex: 10, child: Text('Tushum')),
+                                Container(
+                                  width: 62,
+                                  height: 62,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFEAF3FF),
+                                    borderRadius: BorderRadius.circular(18),
+                                  ),
+                                  child: const Icon(
+                                    Icons.shopping_bag_rounded,
+                                    color: Color(0xFF1E62B7),
+                                    size: 34,
+                                  ),
+                                ),
+                                const SizedBox(width: 14),
+                                const Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'ATAWAY',
+                                      style: TextStyle(
+                                        color: Color(0xFF183E7A),
+                                        fontSize: 26,
+                                        fontWeight: FontWeight.w900,
+                                        letterSpacing: 0.2,
+                                      ),
+                                    ),
+                                    SizedBox(height: 2),
+                                    Text(
+                                      'SAVDO TIZIMI',
+                                      style: TextStyle(
+                                        color: Color(0xFF214A87),
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w800,
+                                        letterSpacing: 1.0,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ],
                             ),
                           ),
-                          if (variantInsights.rows.isEmpty)
-                            const Padding(
-                              padding: EdgeInsets.all(18),
-                              child: Text(
-                                'Tanlangan filter bo‘yicha razmer/rang savdosi topilmadi',
+                          const Expanded(
+                            flex: 4,
+                            child: Column(
+                              children: [
+                                Text(
+                                  'KASSA HISOBOTI',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color: Color(0xFF183E7A),
+                                    fontSize: 30,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                                SizedBox(height: 6),
+                                Text(
+                                  'Hisobot davri bo‘yicha umumiy ma’lumot',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color: Color(0xFF264A80),
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Expanded(
+                            flex: 2,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                _SalesHistoryMetaLine(
+                                  label: 'Sana:',
+                                  value: DateFormat(
+                                    'dd.MM.yyyy',
+                                  ).format(reportNow),
+                                ),
+                                const SizedBox(height: 8),
+                                _SalesHistoryMetaLine(
+                                  label: 'Vaqt:',
+                                  value: DateFormat(
+                                    'HH:mm:ss',
+                                  ).format(reportNow),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 18),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Text(
+                          '$reportRangeText • ${shifts.summary.totalShifts} smena',
+                          style: const TextStyle(
+                            color: Color(0xFF56719D),
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final metricWidth = constraints.maxWidth > 1260
+                              ? (constraints.maxWidth - 48) / 5
+                              : 220.0;
+                          return Wrap(
+                            spacing: 12,
+                            runSpacing: 12,
+                            children: [
+                              SizedBox(
+                                width: metricWidth,
+                                child: _SalesHistoryReportMetricCard(
+                                  label: 'Savdo (tushum)',
+                                  value: _formatMoney(
+                                    grossCollection,
+                                    settings,
+                                  ),
+                                  unit: 'so‘m',
+                                  icon: Icons.shopping_cart_checkout_rounded,
+                                  accent: const Color(0xFF1E62B7),
+                                ),
                               ),
-                            )
-                          else
-                            ...variantInsights.rows
-                                .take(8)
-                                .map(
-                                  (row) => Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                      vertical: 12,
-                                    ),
-                                    decoration: const BoxDecoration(
-                                      border: Border(
-                                        top: BorderSide(
-                                          color: Color(0xFF325183),
-                                        ),
+                              SizedBox(
+                                width: metricWidth,
+                                child: _SalesHistoryReportMetricCard(
+                                  label: 'Qaytarilgan',
+                                  value: _formatMoney(
+                                    totalReturnedAmount,
+                                    settings,
+                                  ),
+                                  unit: 'so‘m',
+                                  icon: Icons.reply_rounded,
+                                  accent: const Color(0xFFD92E27),
+                                ),
+                              ),
+                              SizedBox(
+                                width: metricWidth,
+                                child: _SalesHistoryReportMetricCard(
+                                  label: 'Kassa (sof tushum)',
+                                  value: _formatMoney(netCollection, settings),
+                                  unit: 'so‘m',
+                                  icon: Icons.point_of_sale_rounded,
+                                  accent: const Color(0xFF2FAF54),
+                                ),
+                              ),
+                              SizedBox(
+                                width: metricWidth,
+                                child: _SalesHistoryReportMetricCard(
+                                  label: 'Cheklar soni',
+                                  value: '$totalVisibleSaleCount',
+                                  unit: 'ta',
+                                  icon: Icons.receipt_long_rounded,
+                                  accent: const Color(0xFF1F54AE),
+                                ),
+                              ),
+                              SizedBox(
+                                width: metricWidth,
+                                child: _SalesHistoryReportMetricCard(
+                                  label: 'Qaytarishlar soni',
+                                  value: '$returnOperations',
+                                  unit: 'ta',
+                                  icon: Icons.assignment_return_rounded,
+                                  accent: const Color(0xFFFF7C2F),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 22),
+                      const Text(
+                        'TO‘LOVLAR BO‘YICHA DETALIZATSIYA',
+                        style: TextStyle(
+                          color: Color(0xFF183E7A),
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      _SalesHistoryPaymentTable(
+                        rows: [
+                          _SalesHistoryPaymentRowData(
+                            label: 'NAQD',
+                            salesText: _formatMoney(grossCash, settings),
+                            returnText: _formatMoney(returnCash, settings),
+                            netText: _formatMoney(netCash, settings),
+                            hasReturn: returnCash > 0.0001,
+                            icon: Icons.payments_rounded,
+                            accent: const Color(0xFF2FAF54),
+                          ),
+                          _SalesHistoryPaymentRowData(
+                            label: 'UZCARD',
+                            salesText: _formatMoney(grossCard, settings),
+                            returnText: _formatMoney(returnCard, settings),
+                            netText: _formatMoney(netCard, settings),
+                            hasReturn: returnCard > 0.0001,
+                            brand: _DashboardBrand.uzcard,
+                          ),
+                          _SalesHistoryPaymentRowData(
+                            label: 'HUMO',
+                            salesText: _formatMoney(grossClick, settings),
+                            returnText: _formatMoney(returnClick, settings),
+                            netText: _formatMoney(netClick, settings),
+                            hasReturn: returnClick > 0.0001,
+                            brand: _DashboardBrand.humo,
+                          ),
+                        ],
+                        totalSalesText: _formatMoney(grossCollection, settings),
+                        totalReturnsText: _formatMoney(
+                          totalReturnedAmount,
+                          settings,
+                        ),
+                        totalNetText: _formatMoney(netCollection, settings),
+                      ),
+                      const SizedBox(height: 18),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: const Color(0xFFD6E2F3)),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.all(20),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 88,
+                                      height: 88,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: const Color(0xFFEAF2FF),
+                                      ),
+                                      child: const Icon(
+                                        Icons.point_of_sale_rounded,
+                                        color: Color(0xFF1E4D96),
+                                        size: 42,
                                       ),
                                     ),
-                                    child: Row(
+                                    const SizedBox(width: 18),
+                                    Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
-                                        Expanded(
-                                          flex: 18,
-                                          child: Text(
-                                            row.productName,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
+                                        const Text(
+                                          'KASSA QOLDIG‘I (SOF)',
+                                          style: TextStyle(
+                                            color: Color(0xFF183E7A),
+                                            fontSize: 17,
+                                            fontWeight: FontWeight.w900,
                                           ),
                                         ),
-                                        Expanded(
-                                          flex: 8,
-                                          child: Text(
-                                            row.size.isEmpty ? '-' : row.size,
+                                        const SizedBox(height: 10),
+                                        Text(
+                                          _formatMoney(netCollection, settings),
+                                          style: const TextStyle(
+                                            color: Color(0xFF183E7A),
+                                            fontSize: 28,
+                                            fontWeight: FontWeight.w900,
                                           ),
                                         ),
-                                        Expanded(
-                                          flex: 10,
-                                          child: Text(
-                                            row.color.isEmpty ? '-' : row.color,
-                                          ),
-                                        ),
-                                        Expanded(
-                                          flex: 8,
-                                          child: Text(
-                                            row.quantity.toStringAsFixed(0),
-                                          ),
-                                        ),
-                                        Expanded(
-                                          flex: 10,
-                                          child: Text(
-                                            _formatMoney(row.revenue, settings),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
+                                        const SizedBox(height: 4),
+                                        const Text(
+                                          'so‘m',
+                                          style: TextStyle(
+                                            color: Color(0xFF183153),
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w600,
                                           ),
                                         ),
                                       ],
                                     ),
-                                  ),
-                                ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-            ],
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: const Color(0xFFD6E2F3)),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x120F2747),
-                    blurRadius: 16,
-                    offset: Offset(0, 8),
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Smena hisobotlari',
-                    style: TextStyle(
-                      color: Color(0xFF163E7C),
-                      fontSize: 18,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  if (shifts.shifts.isEmpty)
-                    const Text('Smena topilmadi')
-                  else
-                    SizedBox(
-                      height: 168,
-                      child: ListView.separated(
-                        scrollDirection: Axis.horizontal,
-                        itemCount: cashierShiftGroups.length,
-                        separatorBuilder: (context, index) =>
-                            const SizedBox(width: 12),
-                        itemBuilder: (context, index) {
-                          final entry = cashierShiftGroups[index];
-                          final cashier = entry.key;
-                          final cashierShifts = entry.value;
-                          final totalAmount = cashierShifts.fold<double>(
-                            0,
-                            (sum, shift) =>
-                                sum +
-                                (shiftComputation.totalsByShiftId[shift.id]
-                                        ?.totalAmount ??
-                                    0),
-                          );
-                          final totalSales = cashierShifts.fold<int>(
-                            0,
-                            (sum, shift) =>
-                                sum +
-                                (shiftComputation.totalsByShiftId[shift.id]
-                                        ?.totalSalesCount ??
-                                    0),
-                          );
-                          final openCount = cashierShifts
-                              .where((shift) => shift.isOpen)
-                              .length;
-                          return InkWell(
-                            borderRadius: BorderRadius.circular(14),
-                            onTap: () => _showCashierShiftDialog(
-                              context: context,
-                              cashierUsername: cashier,
-                              shifts: cashierShifts,
-                              settings: settings,
-                              totalsByShiftId: shiftComputation.totalsByShiftId,
-                            ),
-                            child: Container(
-                              width: 250,
-                              padding: const EdgeInsets.all(14),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFFF8FBFF),
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(
-                                  color: openCount > 0
-                                      ? const Color(0xFF67D68B)
-                                      : const Color(0xFFD6E2F3),
+                                  ],
                                 ),
                               ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    cashier,
-                                    style: const TextStyle(
-                                      color: Color(0xFF183153),
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w900,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text('Smenalar: ${cashierShifts.length}'),
-                                  Text('Ochiq smena: $openCount'),
-                                  Text('Savdolar: $totalSales'),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'Jami tushum: ${_formatMoney(totalAmount, settings)}',
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                  const Spacer(),
-                                  const Text(
-                                    'Batafsil ko‘rish',
-                                    style: TextStyle(
-                                      color: Color(0xFF6F87A7),
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ],
-                              ),
                             ),
-                          );
-                        },
-                      ),
-                    ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFFD6E2F3)),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x120F2747),
-                      blurRadius: 18,
-                      offset: Offset(0, 8),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 14,
-                      ),
-                      decoration: const BoxDecoration(
-                        color: Color(0xFF184384),
-                        borderRadius: BorderRadius.only(
-                          topLeft: Radius.circular(16),
-                          topRight: Radius.circular(16),
-                        ),
-                      ),
-                      child: const DefaultTextStyle(
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                        ),
-                        child: Row(
-                          children: [
-                          Expanded(flex: 14, child: Text('Sana')),
-                          Expanded(flex: 8, child: Text('Smena')),
-                          Expanded(flex: 10, child: Text('Kassir')),
-                          Expanded(flex: 18, child: Text('Mahsulotlar')),
-                          Expanded(flex: 12, child: Text('Soni')),
-                          Expanded(flex: 10, child: Text('To‘lov')),
-                          Expanded(flex: 9, child: Text('Naqd')),
-                          Expanded(flex: 9, child: Text('UZCARD')),
-                          Expanded(flex: 9, child: Text('HUMO')),
-                          Expanded(flex: 9, child: Text('Qarz')),
-                          Expanded(flex: 9, child: Text('Tannarx')),
-                          Expanded(flex: 9, child: Text('Tushum')),
-                          Expanded(flex: 9, child: Text('Foyda')),
-                        ],
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      child: pagedSales.isEmpty
-                          ? const Center(
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    Icons.inventory_2_outlined,
-                                    size: 42,
-                                    color: Color(0xFF9EB1CB),
-                                  ),
-                                  SizedBox(height: 10),
-                                  Text(
-                                    'Sotuv topilmadi',
-                                    style: TextStyle(
-                                      color: Color(0xFF6A7E9E),
-                                      fontWeight: FontWeight.w700,
+                            Container(
+                              width: 1,
+                              height: 150,
+                              color: const Color(0xFFDCE6F3),
+                            ),
+                            Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.all(20),
+                                child: Column(
+                                  children: [
+                                    _SalesHistoryBalanceLine(
+                                      label: 'Naqd pul (qoldiq)',
+                                      value: _formatMoney(netCash, settings),
+                                      icon: Icons.payments_rounded,
+                                      accent: const Color(0xFF2FAF54),
                                     ),
-                                  ),
-                                ],
-                              ),
-                            )
-                          : ListView.separated(
-                              itemCount: pagedSales.length,
-                              separatorBuilder: (context, index) =>
-                                  const Divider(
-                                    height: 1,
-                                    color: Color(0xFFDCE7F4),
-                                  ),
-                              itemBuilder: (context, index) {
-                                final sale = pagedSales[index];
-                                final resolvedShiftId = sale.shiftId.isNotEmpty
-                                    ? sale.shiftId
-                                    : (shiftComputation.saleToShiftId[_saleComputationKey(
-                                        sale,
-                                      )] ??
-                                      '');
-                                final shift = resolvedShiftId.isEmpty
-                                    ? null
-                                    : shiftsById[resolvedShiftId];
-                                final isDebtPayment =
-                                    sale.transactionType == 'debt_payment' ||
-                                    sale.paymentType == 'debt_payment';
-                                final fullyReturned =
-                                    !isDebtPayment && _isFullyReturned(sale);
-                                final productText = isDebtPayment
-                                    ? 'Qarz to‘lovi${sale.customerName.isNotEmpty ? ' (${sale.customerName})' : ''}'
-                                    : sale.items
-                                          .map((item) => item.productName)
-                                          .join(', ');
-                                final qtyText = isDebtPayment
-                                    ? '-'
-                                    : sale.items
-                                          .map(
-                                            (item) =>
-                                                '${_leftQty(item).toStringAsFixed(0)}/${item.quantity.toStringAsFixed(0)} ${item.unit}',
-                                          )
-                                          .join(', ');
-                                final saleProfit = isDebtPayment
-                                    ? 0.0
-                                    : sale.items.fold<double>(
-                                        0,
-                                        (sum, item) =>
-                                            sum +
-                                            (item.lineProfit -
-                                                item.returnedProfit),
-                                      );
-                                final saleCost = isDebtPayment
-                                    ? 0.0
-                                    : (sale.totalAmount - saleProfit)
-                                          .clamp(0, double.infinity)
-                                          .toDouble();
-
-                                return Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                    vertical: 14,
-                                  ),
-                                  color: fullyReturned
-                                      ? const Color(0xFFFFF2F0)
-                                      : Colors.white,
-                                  child: Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Expanded(
-                                        flex: 14,
-                                        child: Text(
-                                          _formatDate(sale.createdAt),
-                                        ),
-                                      ),
-                                      Expanded(
-                                        flex: 8,
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              sale.shiftNumber > 0
-                                                  ? '#${sale.shiftNumber}'
-                                                  : '-',
-                                            ),
-                                            if (shift != null)
-                                              Text(
-                                                '${_formatShortDate(shift.openedAt)} - ${_formatShortDate(shift.closedAt)}',
-                                                style: const TextStyle(
-                                                  fontSize: 11,
-                                                  color: Color(0xFF7D8FA8),
-                                                ),
-                                              ),
-                                          ],
-                                        ),
-                                      ),
-                                      Expanded(
-                                        flex: 10,
-                                        child: Text(sale.cashierUsername),
-                                      ),
-                                      Expanded(
-                                        flex: 18,
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(productText),
-                                            if (fullyReturned)
-                                              const Padding(
-                                                padding: EdgeInsets.only(
-                                                  top: 6,
-                                                ),
-                                                child: Text(
-                                                  'Vozvrat qilindi',
-                                                  style: TextStyle(
-                                                    color: Color(0xFFD64545),
-                                                    fontWeight: FontWeight.w700,
-                                                  ),
-                                                ),
-                                              ),
-                                          ],
-                                        ),
-                                      ),
-                                      Expanded(flex: 12, child: Text(qtyText)),
-                                      Expanded(
-                                        flex: 10,
-                                        child: Text(
-                                          _paymentLabel(sale.paymentType),
-                                        ),
-                                      ),
-                                      Expanded(
-                                        flex: 9,
-                                        child: Text(
-                                          _formatMoney(
-                                            sale.payments.cash,
-                                            settings,
-                                          ),
-                                        ),
-                                      ),
-                                      Expanded(
-                                        flex: 9,
-                                        child: Text(
-                                          _formatMoney(
-                                            sale.payments.card,
-                                            settings,
-                                          ),
-                                        ),
-                                      ),
-                                      Expanded(
-                                        flex: 9,
-                                        child: Text(
-                                          _formatMoney(
-                                            sale.payments.click,
-                                            settings,
-                                          ),
-                                        ),
-                                      ),
-                                      Expanded(
-                                        flex: 9,
-                                        child: Text(
-                                          _formatMoney(
-                                            sale.debtAmount,
-                                            settings,
-                                          ),
-                                        ),
-                                      ),
-                                      Expanded(
-                                        flex: 9,
-                                        child: Text(
-                                          _formatMoney(saleCost, settings),
-                                        ),
-                                      ),
-                                      Expanded(
-                                        flex: 9,
-                                        child: Text(
-                                          _formatMoney(
-                                            sale.totalAmount,
-                                            settings,
-                                          ),
-                                        ),
-                                      ),
-                                      Expanded(
-                                        flex: 9,
-                                        child: Text(
-                                          _formatMoney(saleProfit, settings),
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              },
-                            ),
-                    ),
-                    if (visibleSales.length > _pageSize)
-                      Container(
-                        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-                        decoration: const BoxDecoration(
-                          border: Border(
-                            top: BorderSide(color: Color(0xFFDCE7F4)),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.end,
-                          children: [
-                            Text('Sahifa $safePage / $totalPages'),
-                            const SizedBox(width: 12),
-                            SizedBox(
-                              width: 110,
-                              height: 38,
-                              child: FilledButton.tonal(
-                                onPressed: safePage > 1
-                                    ? () {
-                                        setState(() {
-                                          _page = safePage - 1;
-                                        });
-                                      }
-                                    : null,
-                                child: const Text('Oldingi'),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            SizedBox(
-                              width: 110,
-                              height: 38,
-                              child: ElevatedButton(
-                                onPressed: safePage < totalPages
-                                    ? () {
-                                        setState(() {
-                                          _page = safePage + 1;
-                                        });
-                                      }
-                                    : null,
-                                child: const Text('Keyingi'),
+                                    const SizedBox(height: 14),
+                                    _SalesHistoryBalanceLine(
+                                      label: 'UZCARD',
+                                      value: _formatMoney(netCard, settings),
+                                      brand: _DashboardBrand.uzcard,
+                                    ),
+                                    const SizedBox(height: 14),
+                                    _SalesHistoryBalanceLine(
+                                      label: 'HUMO',
+                                      value: _formatMoney(netClick, settings),
+                                      brand: _DashboardBrand.humo,
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           ],
                         ),
                       ),
-                  ],
+                      const SizedBox(height: 16),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final insightWidth = constraints.maxWidth > 1120
+                              ? (constraints.maxWidth - 36) / 4
+                              : 240.0;
+                          return Wrap(
+                            spacing: 12,
+                            runSpacing: 12,
+                            children: [
+                              SizedBox(
+                                width: insightWidth,
+                                child: _SalesHistoryInsightCard(
+                                  label: 'O‘rtacha chek',
+                                  value: _formatMoney(averageCheck, settings),
+                                  icon: Icons.auto_graph_rounded,
+                                  accent: const Color(0xFF1E62B7),
+                                ),
+                              ),
+                              SizedBox(
+                                width: insightWidth,
+                                child: _SalesHistoryInsightCard(
+                                  label: 'Sotilgan dona',
+                                  value: totalVisibleItems.toStringAsFixed(0),
+                                  subtitle: 'jami birlik',
+                                  icon: Icons.inventory_2_rounded,
+                                  accent: const Color(0xFF2FAF54),
+                                ),
+                              ),
+                              SizedBox(
+                                width: insightWidth,
+                                child: _SalesHistoryInsightCard(
+                                  label: 'Faol kassir',
+                                  value: topCashier,
+                                  subtitle: topCashier == '-'
+                                      ? 'ma’lumot yo‘q'
+                                      : '$topCashierSales chek • ${_formatMoney(topCashierRevenue, settings)}',
+                                  icon: Icons.badge_rounded,
+                                  accent: const Color(0xFFFF7C2F),
+                                ),
+                              ),
+                              SizedBox(
+                                width: insightWidth,
+                                child: _SalesHistoryInsightCard(
+                                  label: 'Eng katta chek',
+                                  value: _formatMoney(maxTicket, settings),
+                                  subtitle: 'eng yuqori savdo',
+                                  icon: Icons.workspace_premium_rounded,
+                                  accent: const Color(0xFF6C52D9),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ),
+                const SizedBox(height: 16),
+                if (settings.variantInsightsEnabled) ...[
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFFD6E2F3)),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x120F2747),
+                          blurRadius: 16,
+                          offset: Offset(0, 8),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Expanded(
+                              child: Text(
+                                'Razmer va rang bo‘yicha sotuv statistikasi',
+                                style: TextStyle(
+                                  color: Color(0xFF163E7C),
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                            SizedBox(
+                              width: 160,
+                              child: DropdownButtonFormField<String>(
+                                value: _sizeFilter.isEmpty ? null : _sizeFilter,
+                                decoration: const InputDecoration(
+                                  labelText: 'Razmer',
+                                ),
+                                items: [
+                                  const DropdownMenuItem<String>(
+                                    value: '',
+                                    child: Text('Barcha razmer'),
+                                  ),
+                                  ...variantInsights.availableSizes.map(
+                                    (size) => DropdownMenuItem<String>(
+                                      value: size,
+                                      child: Text(size),
+                                    ),
+                                  ),
+                                ],
+                                onChanged: (value) {
+                                  setState(() {
+                                    _sizeFilter = value ?? '';
+                                  });
+                                  _reload();
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            SizedBox(
+                              width: 170,
+                              child: DropdownButtonFormField<String>(
+                                value: _colorFilter.isEmpty
+                                    ? null
+                                    : _colorFilter,
+                                decoration: const InputDecoration(
+                                  labelText: 'Rang',
+                                ),
+                                items: [
+                                  const DropdownMenuItem<String>(
+                                    value: '',
+                                    child: Text('Barcha ranglar'),
+                                  ),
+                                  ...variantInsights.availableColors.map(
+                                    (color) => DropdownMenuItem<String>(
+                                      value: color,
+                                      child: Text(color),
+                                    ),
+                                  ),
+                                ],
+                                onChanged: (value) {
+                                  setState(() {
+                                    _colorFilter = value ?? '';
+                                  });
+                                  _reload();
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        Wrap(
+                          spacing: 12,
+                          runSpacing: 12,
+                          children: [
+                            _SummaryCard(
+                              label: 'Variant savdo soni',
+                              value: variantInsights.summary.totalQuantity
+                                  .toStringAsFixed(0),
+                            ),
+                            _SummaryCard(
+                              label: 'Variant tushumi',
+                              value: _formatMoney(
+                                variantInsights.summary.totalRevenue,
+                                settings,
+                              ),
+                            ),
+                            _SummaryCard(
+                              label: 'Ko‘p sotilgan kiyim',
+                              value:
+                                  variantInsights
+                                      .summary
+                                      .topProduct
+                                      .label
+                                      .isEmpty
+                                  ? '-'
+                                  : variantInsights.summary.topProduct.label,
+                            ),
+                            _SummaryCard(
+                              label: 'Ko‘p sotilgan razmer',
+                              value:
+                                  variantInsights.summary.topSize.label.isEmpty
+                                  ? '-'
+                                  : '${variantInsights.summary.topSize.label} (${variantInsights.summary.topSize.quantity.toStringAsFixed(0)})',
+                            ),
+                            _SummaryCard(
+                              label: 'Ko‘p sotilgan rang',
+                              value:
+                                  variantInsights.summary.topColor.label.isEmpty
+                                  ? '-'
+                                  : '${variantInsights.summary.topColor.label} (${variantInsights.summary.topColor.quantity.toStringAsFixed(0)})',
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF8FBFF),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: const Color(0xFFD6E2F3)),
+                          ),
+                          child: Column(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 12,
+                                ),
+                                decoration: const BoxDecoration(
+                                  color: Color(0xFF365892),
+                                  borderRadius: BorderRadius.only(
+                                    topLeft: Radius.circular(14),
+                                    topRight: Radius.circular(14),
+                                  ),
+                                ),
+                                child: const Row(
+                                  children: [
+                                    Expanded(flex: 18, child: Text('Kiyim')),
+                                    Expanded(flex: 8, child: Text('Razmer')),
+                                    Expanded(flex: 10, child: Text('Rang')),
+                                    Expanded(flex: 8, child: Text('Soni')),
+                                    Expanded(flex: 10, child: Text('Tushum')),
+                                  ],
+                                ),
+                              ),
+                              if (variantInsights.rows.isEmpty)
+                                const Padding(
+                                  padding: EdgeInsets.all(18),
+                                  child: Text(
+                                    'Tanlangan filter bo‘yicha razmer/rang savdosi topilmadi',
+                                  ),
+                                )
+                              else
+                                ...variantInsights.rows
+                                    .take(8)
+                                    .map(
+                                      (row) => Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 12,
+                                        ),
+                                        decoration: const BoxDecoration(
+                                          border: Border(
+                                            top: BorderSide(
+                                              color: Color(0xFF325183),
+                                            ),
+                                          ),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Expanded(
+                                              flex: 18,
+                                              child: Text(
+                                                row.productName,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                            Expanded(
+                                              flex: 8,
+                                              child: Text(
+                                                row.size.isEmpty
+                                                    ? '-'
+                                                    : row.size,
+                                              ),
+                                            ),
+                                            Expanded(
+                                              flex: 10,
+                                              child: Text(
+                                                row.color.isEmpty
+                                                    ? '-'
+                                                    : row.color,
+                                              ),
+                                            ),
+                                            Expanded(
+                                              flex: 8,
+                                              child: Text(
+                                                row.quantity.toStringAsFixed(0),
+                                              ),
+                                            ),
+                                            Expanded(
+                                              flex: 10,
+                                              child: Text(
+                                                _formatMoney(
+                                                  row.revenue,
+                                                  settings,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFFD6E2F3)),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x120F2747),
+                        blurRadius: 16,
+                        offset: Offset(0, 8),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Smena hisobotlari',
+                        style: TextStyle(
+                          color: Color(0xFF163E7C),
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      if (shifts.shifts.isEmpty)
+                        const Text('Smena topilmadi')
+                      else
+                        SizedBox(
+                          height: 206,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: cashierShiftGroups.length,
+                            separatorBuilder: (context, index) =>
+                                const SizedBox(width: 12),
+                            itemBuilder: (context, index) {
+                              final entry = cashierShiftGroups[index];
+                              final cashier = entry.key;
+                              final cashierShifts = entry.value;
+                              final totalAmount = cashierShifts.fold<double>(
+                                0,
+                                (sum, shift) =>
+                                    sum +
+                                    (shiftComputation
+                                            .totalsByShiftId[shift.id]
+                                            ?.netAmount ??
+                                        0),
+                              );
+                              final totalSales = cashierShifts.fold<int>(
+                                0,
+                                (sum, shift) =>
+                                    sum +
+                                    (shiftComputation
+                                            .totalsByShiftId[shift.id]
+                                            ?.totalSalesCount ??
+                                        0),
+                              );
+                              final openCount = cashierShifts
+                                  .where((shift) => shift.isOpen)
+                                  .length;
+                              return InkWell(
+                                borderRadius: BorderRadius.circular(14),
+                                onTap: () => _showCashierShiftDialog(
+                                  context: context,
+                                  cashierUsername: cashier,
+                                  shifts: cashierShifts,
+                                  settings: settings,
+                                  totalsByShiftId:
+                                      shiftComputation.totalsByShiftId,
+                                ),
+                                child: Container(
+                                  width: 250,
+                                  padding: const EdgeInsets.fromLTRB(
+                                    14,
+                                    16,
+                                    14,
+                                    14,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFF8FBFF),
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(
+                                      color: openCount > 0
+                                          ? const Color(0xFF67D68B)
+                                          : const Color(0xFFD6E2F3),
+                                    ),
+                                  ),
+                                  child: Scrollbar(
+                                    thumbVisibility: true,
+                                    child: SingleChildScrollView(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            cashier,
+                                            style: const TextStyle(
+                                              color: Color(0xFF183153),
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.w900,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            'Smenalar: ${cashierShifts.length}',
+                                          ),
+                                          Text('Ochiq smena: $openCount'),
+                                          Text('Savdolar: $totalSales'),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            'Jami tushum: ${_formatMoney(totalAmount, settings)}',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 14),
+                                          const Text(
+                                            'Batafsil ko‘rish',
+                                            style: TextStyle(
+                                              color: Color(0xFF6F87A7),
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  height: 520,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFFD6E2F3)),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x120F2747),
+                          blurRadius: 18,
+                          offset: Offset(0, 8),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 14,
+                          ),
+                          decoration: const BoxDecoration(
+                            color: Color(0xFF184384),
+                            borderRadius: BorderRadius.only(
+                              topLeft: Radius.circular(16),
+                              topRight: Radius.circular(16),
+                            ),
+                          ),
+                          child: const DefaultTextStyle(
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(flex: 14, child: Text('Sana')),
+                                Expanded(flex: 8, child: Text('Smena')),
+                                Expanded(flex: 10, child: Text('Kassir')),
+                                Expanded(flex: 18, child: Text('Mahsulotlar')),
+                                Expanded(flex: 12, child: Text('Soni')),
+                                Expanded(flex: 10, child: Text('To‘lov')),
+                                Expanded(flex: 9, child: Text('Naqd')),
+                                Expanded(flex: 9, child: Text('UZCARD')),
+                                Expanded(flex: 9, child: Text('HUMO')),
+                                Expanded(flex: 9, child: Text('Qarz')),
+                                Expanded(flex: 9, child: Text('Tannarx')),
+                                Expanded(flex: 9, child: Text('Tushum')),
+                                Expanded(flex: 9, child: Text('Foyda')),
+                              ],
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: pagedSales.isEmpty
+                              ? const Center(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.inventory_2_outlined,
+                                        size: 42,
+                                        color: Color(0xFF9EB1CB),
+                                      ),
+                                      SizedBox(height: 10),
+                                      Text(
+                                        'Sotuv topilmadi',
+                                        style: TextStyle(
+                                          color: Color(0xFF6A7E9E),
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                )
+                              : ListView.separated(
+                                  itemCount: pagedSales.length,
+                                  separatorBuilder: (context, index) =>
+                                      const Divider(
+                                        height: 1,
+                                        color: Color(0xFFDCE7F4),
+                                      ),
+                                  itemBuilder: (context, index) {
+                                    final sale = pagedSales[index];
+                                    final resolvedShiftId =
+                                        sale.shiftId.isNotEmpty
+                                        ? sale.shiftId
+                                        : (shiftComputation
+                                                  .saleToShiftId[_saleComputationKey(
+                                                sale,
+                                              )] ??
+                                              '');
+                                    final shift = resolvedShiftId.isEmpty
+                                        ? null
+                                        : shiftsById[resolvedShiftId];
+                                    final isDebtPayment =
+                                        sale.transactionType ==
+                                            'debt_payment' ||
+                                        sale.paymentType == 'debt_payment';
+                                    final fullyReturned =
+                                        !isDebtPayment &&
+                                        _isFullyReturned(sale);
+                                    final latestReturn = sale.returns.isEmpty
+                                        ? null
+                                        : ([...sale.returns]..sort((a, b) {
+                                                final aTime =
+                                                    a.createdAt ??
+                                                    DateTime.fromMillisecondsSinceEpoch(
+                                                      0,
+                                                    );
+                                                final bTime =
+                                                    b.createdAt ??
+                                                    DateTime.fromMillisecondsSinceEpoch(
+                                                      0,
+                                                    );
+                                                return bTime.compareTo(aTime);
+                                              }))
+                                              .first;
+                                    final displayDate =
+                                        fullyReturned && latestReturn != null
+                                        ? latestReturn.createdAt
+                                        : sale.createdAt;
+                                    final displayShiftNumber =
+                                        fullyReturned &&
+                                            latestReturn != null &&
+                                            latestReturn.shiftNumber > 0
+                                        ? latestReturn.shiftNumber
+                                        : sale.shiftNumber;
+                                    final displayShift =
+                                        fullyReturned &&
+                                            latestReturn != null &&
+                                            latestReturn.shiftId.isNotEmpty
+                                        ? shiftsById[latestReturn.shiftId]
+                                        : shift;
+                                    final displayCashier =
+                                        fullyReturned &&
+                                            latestReturn != null &&
+                                            latestReturn.cashierUsername
+                                                .trim()
+                                                .isNotEmpty
+                                        ? latestReturn.cashierUsername
+                                        : sale.cashierUsername;
+                                    final productText = isDebtPayment
+                                        ? 'Qarz to‘lovi${sale.customerName.isNotEmpty ? ' (${sale.customerName})' : ''}'
+                                        : sale.items
+                                              .map((item) => item.productName)
+                                              .join(', ');
+                                    final qtyText = isDebtPayment
+                                        ? '-'
+                                        : sale.items
+                                              .map(
+                                                (item) =>
+                                                    '${_leftQty(item).toStringAsFixed(0)}/${item.quantity.toStringAsFixed(0)} ${item.unit}',
+                                              )
+                                              .join(', ');
+                                    final saleProfit = isDebtPayment
+                                        ? 0.0
+                                        : sale.items.fold<double>(
+                                            0,
+                                            (sum, item) =>
+                                                sum +
+                                                (item.lineProfit -
+                                                    item.returnedProfit),
+                                          );
+                                    final saleCost = isDebtPayment
+                                        ? 0.0
+                                        : (sale.totalAmount - saleProfit)
+                                              .clamp(0, double.infinity)
+                                              .toDouble();
+
+                                    return Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                        vertical: 14,
+                                      ),
+                                      color: fullyReturned
+                                          ? const Color(0xFFFFF2F0)
+                                          : Colors.white,
+                                      child: Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Expanded(
+                                            flex: 14,
+                                            child: Text(
+                                              _formatDate(displayDate),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 8,
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  displayShiftNumber > 0
+                                                      ? '#$displayShiftNumber'
+                                                      : '-',
+                                                ),
+                                                if (displayShift != null)
+                                                  Text(
+                                                    '${_formatShortDate(displayShift.openedAt)} - ${_formatShortDate(displayShift.closedAt)}',
+                                                    style: const TextStyle(
+                                                      fontSize: 11,
+                                                      color: Color(0xFF7D8FA8),
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 10,
+                                            child: Text(displayCashier),
+                                          ),
+                                          Expanded(
+                                            flex: 18,
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(productText),
+                                                if (fullyReturned)
+                                                  const Padding(
+                                                    padding: EdgeInsets.only(
+                                                      top: 6,
+                                                    ),
+                                                    child: Text(
+                                                      'Vozvrat qilindi',
+                                                      style: TextStyle(
+                                                        color: Color(
+                                                          0xFFD64545,
+                                                        ),
+                                                        fontWeight:
+                                                            FontWeight.w700,
+                                                      ),
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 12,
+                                            child: Text(qtyText),
+                                          ),
+                                          Expanded(
+                                            flex: 10,
+                                            child: Text(
+                                              _paymentLabel(sale.paymentType),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 9,
+                                            child: Text(
+                                              _formatMoney(
+                                                sale.payments.cash,
+                                                settings,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 9,
+                                            child: Text(
+                                              _formatMoney(
+                                                sale.payments.card,
+                                                settings,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 9,
+                                            child: Text(
+                                              _formatMoney(
+                                                sale.payments.click,
+                                                settings,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 9,
+                                            child: Text(
+                                              _formatMoney(
+                                                sale.debtAmount,
+                                                settings,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 9,
+                                            child: Text(
+                                              _formatMoney(saleCost, settings),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 9,
+                                            child: Text(
+                                              _formatMoney(
+                                                sale.totalAmount,
+                                                settings,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 9,
+                                            child: Text(
+                                              _formatMoney(
+                                                saleProfit,
+                                                settings,
+                                              ),
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
+                        ),
+                        if (visibleSales.length > _pageSize)
+                          Container(
+                            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                            decoration: const BoxDecoration(
+                              border: Border(
+                                top: BorderSide(color: Color(0xFFDCE7F4)),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                Text('Sahifa $safePage / $totalPages'),
+                                const SizedBox(width: 12),
+                                SizedBox(
+                                  width: 110,
+                                  height: 38,
+                                  child: FilledButton.tonal(
+                                    onPressed: safePage > 1
+                                        ? () {
+                                            setState(() {
+                                              _page = safePage - 1;
+                                            });
+                                          }
+                                        : null,
+                                    child: const Text('Oldingi'),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                SizedBox(
+                                  width: 110,
+                                  height: 38,
+                                  child: ElevatedButton(
+                                    onPressed: safePage < totalPages
+                                        ? () {
+                                            setState(() {
+                                              _page = safePage + 1;
+                                            });
+                                          }
+                                        : null,
+                                    child: const Text('Keyingi'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -4651,6 +5535,688 @@ class _SummaryCard extends StatelessWidget {
   }
 }
 
+class _SalesHistoryMetaLine extends StatelessWidget {
+  const _SalesHistoryMetaLine({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.end,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: Color(0xFF183153),
+            fontSize: 14,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          value,
+          style: const TextStyle(
+            color: Color(0xFF183153),
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SalesHistoryReportMetricCard extends StatelessWidget {
+  const _SalesHistoryReportMetricCard({
+    required this.label,
+    required this.value,
+    required this.unit,
+    this.icon,
+    this.accent = const Color(0xFF1E62B7),
+    this.brand,
+  });
+
+  final String label;
+  final String value;
+  final String unit;
+  final IconData? icon;
+  final Color accent;
+  final _DashboardBrand? brand;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border.all(color: const Color(0xFFD6E2F3)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 72,
+            height: 72,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: accent.withValues(alpha: brand == null ? 0.12 : 0.08),
+            ),
+            child: Center(
+              child: brand == null
+                  ? Icon(icon, color: accent, size: 38)
+                  : _DashboardStatBadge(
+                      icon: icon ?? Icons.circle,
+                      accent: accent,
+                      brand: brand,
+                    ),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label.toUpperCase(),
+                  style: TextStyle(
+                    color: accent,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  value,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.black,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  unit,
+                  style: const TextStyle(
+                    color: Colors.black,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SalesHistoryPaymentRowData {
+  const _SalesHistoryPaymentRowData({
+    required this.label,
+    required this.salesText,
+    required this.returnText,
+    required this.netText,
+    required this.hasReturn,
+    this.icon,
+    this.accent = const Color(0xFF1E62B7),
+    this.brand,
+  });
+
+  final String label;
+  final String salesText;
+  final String returnText;
+  final String netText;
+  final bool hasReturn;
+  final IconData? icon;
+  final Color accent;
+  final _DashboardBrand? brand;
+}
+
+class _SalesHistoryPaymentTable extends StatelessWidget {
+  const _SalesHistoryPaymentTable({
+    required this.rows,
+    required this.totalSalesText,
+    required this.totalReturnsText,
+    required this.totalNetText,
+  });
+
+  final List<_SalesHistoryPaymentRowData> rows;
+  final String totalSalesText;
+  final String totalReturnsText;
+  final String totalNetText;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFD6E2F3)),
+      ),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+            decoration: const BoxDecoration(
+              color: Color(0xFF173F82),
+              borderRadius: BorderRadius.only(
+                topLeft: Radius.circular(18),
+                topRight: Radius.circular(18),
+              ),
+            ),
+            child: const DefaultTextStyle(
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w800,
+              ),
+              child: Row(
+                children: [
+                  Expanded(flex: 26, child: Text('TO‘LOV TURI')),
+                  Expanded(
+                    flex: 20,
+                    child: Text('SAVDO (so‘m)', textAlign: TextAlign.center),
+                  ),
+                  Expanded(
+                    flex: 20,
+                    child: Text(
+                      'QAYTARISH (so‘m)',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                  Expanded(
+                    flex: 20,
+                    child: Text('JAMI (so‘m)', textAlign: TextAlign.center),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          for (final row in rows) _SalesHistoryPaymentTableRow(row: row),
+          _SalesHistoryPaymentTableFooter(
+            totalSalesText: totalSalesText,
+            totalReturnsText: totalReturnsText,
+            totalNetText: totalNetText,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SalesHistoryPaymentTableFooter extends StatelessWidget {
+  const _SalesHistoryPaymentTableFooter({
+    required this.totalSalesText,
+    required this.totalReturnsText,
+    required this.totalNetText,
+  });
+
+  final String totalSalesText;
+  final String totalReturnsText;
+  final String totalNetText;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+      decoration: const BoxDecoration(
+        color: Color(0xFFF1F6FF),
+        borderRadius: BorderRadius.only(
+          bottomLeft: Radius.circular(18),
+          bottomRight: Radius.circular(18),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Expanded(
+            flex: 26,
+            child: Text(
+              'JAMI',
+              style: TextStyle(
+                color: Color(0xFF173F82),
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 20,
+            child: Text(
+              totalSalesText,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Color(0xFF173F82),
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 20,
+            child: Text(
+              totalReturnsText,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Color(0xFFD92E27),
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 20,
+            child: Text(
+              totalNetText,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Color(0xFF0F8D3F),
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SalesHistoryPaymentTableRow extends StatelessWidget {
+  const _SalesHistoryPaymentTableRow({required this.row});
+
+  final _SalesHistoryPaymentRowData row;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: Color(0xFFDCE6F3))),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            flex: 26,
+            child: Row(
+              children: [
+                _DashboardStatBadge(
+                  icon: row.icon ?? Icons.circle,
+                  accent: row.accent,
+                  brand: row.brand,
+                ),
+                const SizedBox(width: 14),
+                Text(
+                  row.label,
+                  style: const TextStyle(
+                    color: Colors.black,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            flex: 20,
+            child: Text(
+              row.salesText,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.black,
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 20,
+            child: Text(
+              row.returnText,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: row.hasReturn ? const Color(0xFFD92E27) : Colors.black,
+                fontSize: 16,
+                fontWeight: row.hasReturn ? FontWeight.w900 : FontWeight.w500,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 20,
+            child: Text(
+              row.netText,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Color(0xFF0F8D3F),
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SalesHistoryBalanceLine extends StatelessWidget {
+  const _SalesHistoryBalanceLine({
+    required this.label,
+    required this.value,
+    this.icon,
+    this.accent = const Color(0xFF1E62B7),
+    this.brand,
+  });
+
+  final String label;
+  final String value;
+  final IconData? icon;
+  final Color accent;
+  final _DashboardBrand? brand;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        _DashboardStatBadge(
+          icon: icon ?? Icons.circle,
+          accent: accent,
+          brand: brand,
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Row(
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  color: Colors.black,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  '............................',
+                  overflow: TextOverflow.clip,
+                  style: TextStyle(
+                    color: Color(0xFF8CA0BF),
+                    fontSize: 14,
+                    height: 1.0,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 10),
+        Text(
+          value,
+          style: const TextStyle(
+            color: Color(0xFF0F8D3F),
+            fontSize: 15,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SalesHistoryInsightCard extends StatelessWidget {
+  const _SalesHistoryInsightCard({
+    required this.label,
+    required this.value,
+    required this.icon,
+    required this.accent,
+    this.subtitle,
+  });
+
+  final String label;
+  final String value;
+  final String? subtitle;
+  final IconData icon;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FBFF),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFD6E2F3)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Icon(icon, color: accent, size: 28),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: Color(0xFF183E7A),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  value,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.black,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                if (subtitle != null && subtitle!.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    subtitle!,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFF6D7F9A),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ShiftReportMetricCard extends StatelessWidget {
+  const _ShiftReportMetricCard({
+    required this.label,
+    required this.value,
+    required this.unit,
+    required this.icon,
+    required this.accent,
+  });
+
+  final String label;
+  final String value;
+  final String unit;
+  final IconData icon;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 220,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: const Color(0xFFD6E2F3)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 64,
+              height: 64,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: accent.withValues(alpha: 0.12),
+              ),
+              child: Icon(icon, color: accent, size: 34),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label.toUpperCase(),
+                    style: TextStyle(
+                      color: accent,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    value,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    unit,
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CompactShiftPaymentRow extends StatelessWidget {
+  const _CompactShiftPaymentRow({
+    required this.label,
+    required this.sales,
+    required this.returns,
+    required this.net,
+    required this.accent,
+    required this.icon,
+    required this.hasReturn,
+    this.brand,
+  });
+
+  final String label;
+  final String sales;
+  final String returns;
+  final String net;
+  final Color accent;
+  final IconData icon;
+  final bool hasReturn;
+  final _DashboardBrand? brand;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        border: Border(top: BorderSide(color: Color(0xFFDCE6F3))),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            flex: 24,
+            child: Row(
+              children: [
+                _DashboardStatBadge(icon: icon, accent: accent, brand: brand),
+                const SizedBox(width: 10),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: Colors.black,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            flex: 19,
+            child: Text(
+              sales,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.black,
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 19,
+            child: Text(
+              returns,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: hasReturn ? const Color(0xFFD92E27) : Colors.black,
+                fontSize: 14,
+                fontWeight: hasReturn ? FontWeight.w900 : FontWeight.w500,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 19,
+            child: Text(
+              net,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Color(0xFF0F8D3F),
+                fontSize: 14,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _DashboardStatBadge extends StatelessWidget {
   const _DashboardStatBadge({
     required this.icon,
@@ -4675,7 +6241,10 @@ class _DashboardStatBadge extends StatelessWidget {
         padding: const EdgeInsets.all(5),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(8),
-          child: Image.asset('assets/branding/humo_logo.png', fit: BoxFit.contain),
+          child: Image.asset(
+            'assets/branding/humo_logo.png',
+            fit: BoxFit.contain,
+          ),
         ),
       );
     }

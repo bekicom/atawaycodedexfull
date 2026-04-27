@@ -45,6 +45,8 @@ class ReturnRecord {
     required this.saleCreatedAt,
     required this.returnCreatedAt,
     required this.cashierUsername,
+    required this.shiftId,
+    required this.shiftNumber,
     required this.paymentType,
     required this.payments,
     required this.totalAmount,
@@ -57,6 +59,8 @@ class ReturnRecord {
   final DateTime? saleCreatedAt;
   final DateTime? returnCreatedAt;
   final String cashierUsername;
+  final String shiftId;
+  final int shiftNumber;
   final String paymentType;
   final ReturnPaymentsRecord payments;
   final double totalAmount;
@@ -69,21 +73,28 @@ class ReturnRecord {
       id: json['_id']?.toString() ?? '',
       saleId: json['saleId']?.toString() ?? '',
       saleCreatedAt: DateTime.tryParse(json['saleCreatedAt']?.toString() ?? ''),
-      returnCreatedAt:
-          DateTime.tryParse(json['returnCreatedAt']?.toString() ?? ''),
+      returnCreatedAt: DateTime.tryParse(
+        json['returnCreatedAt']?.toString() ?? '',
+      ),
       cashierUsername: json['cashierUsername']?.toString() ?? '-',
+      shiftId: json['shiftId']?.toString() ?? '',
+      shiftNumber: (json['shiftNumber'] as num?)?.toInt() ?? 0,
       paymentType: json['paymentType']?.toString() ?? '',
       payments: ReturnPaymentsRecord.fromJson(
         json['payments'] is Map<String, dynamic>
             ? json['payments'] as Map<String, dynamic>
             : json['payments'] is Map
-                ? Map<String, dynamic>.from(json['payments'] as Map)
-                : null,
+            ? Map<String, dynamic>.from(json['payments'] as Map)
+            : null,
       ),
       totalAmount: _toDouble(json['totalAmount']),
       note: json['note']?.toString() ?? '',
       items: rawItems
-          .map((item) => ReturnItemRecord.fromJson(Map<String, dynamic>.from(item as Map)))
+          .map(
+            (item) => ReturnItemRecord.fromJson(
+              Map<String, dynamic>.from(item as Map),
+            ),
+          )
           .toList(),
     );
   }
@@ -119,10 +130,7 @@ class ReturnsSummaryRecord {
 }
 
 class ReturnsRecord {
-  const ReturnsRecord({
-    required this.returns,
-    required this.summary,
-  });
+  const ReturnsRecord({required this.returns, required this.summary});
 
   final List<ReturnRecord> returns;
   final ReturnsSummaryRecord summary;
@@ -131,14 +139,17 @@ class ReturnsRecord {
     final rawReturns = (json['returns'] as List?) ?? const [];
     return ReturnsRecord(
       returns: rawReturns
-          .map((item) => ReturnRecord.fromJson(Map<String, dynamic>.from(item as Map)))
+          .map(
+            (item) =>
+                ReturnRecord.fromJson(Map<String, dynamic>.from(item as Map)),
+          )
           .toList(),
       summary: ReturnsSummaryRecord.fromJson(
         json['summary'] is Map<String, dynamic>
             ? json['summary'] as Map<String, dynamic>
             : json['summary'] is Map
-                ? Map<String, dynamic>.from(json['summary'] as Map)
-                : null,
+            ? Map<String, dynamic>.from(json['summary'] as Map)
+            : null,
       ),
     );
   }

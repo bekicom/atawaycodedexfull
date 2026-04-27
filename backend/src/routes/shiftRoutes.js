@@ -68,6 +68,43 @@ function buildDateRangeQuery({ period, from, to }) {
   return query;
 }
 
+function buildShiftRangeQuery({ period, from, to }) {
+  const range = buildDateRangeQuery({ period, from, to });
+  if (!range) return null;
+
+  const start = range.$gte || null;
+  const end = range.$lt || range.$lte || null;
+
+  if (start && end) {
+    return {
+      openedAt: { $lte: end },
+      $or: [
+        { closedAt: { $gte: start } },
+        { closedAt: null },
+        { closedAt: { $exists: false } }
+      ]
+    };
+  }
+
+  if (start) {
+    return {
+      $or: [
+        { closedAt: { $gte: start } },
+        { closedAt: null },
+        { closedAt: { $exists: false } }
+      ]
+    };
+  }
+
+  if (end) {
+    return {
+      openedAt: { $lte: end }
+    };
+  }
+
+  return null;
+}
+
 function buildShiftSalesQuery(req, shiftId, shiftDoc = null) {
   const query = tenantFilter(req, {
     entryType: { $ne: "opening_balance" },
@@ -266,9 +303,9 @@ router.get("/", authMiddleware, async (req, res) => {
     : 1000;
 
   const query = tenantFilter(req);
-  const openedAtRange = buildDateRangeQuery({ period, from, to });
-  if (openedAtRange) {
-    query.openedAt = openedAtRange;
+  const shiftRangeQuery = buildShiftRangeQuery({ period, from, to });
+  if (shiftRangeQuery) {
+    Object.assign(query, shiftRangeQuery);
   }
   if (cashierUsername) {
     query.cashierUsername = cashierUsername;
