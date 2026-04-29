@@ -10,6 +10,7 @@ import { PurchasesPage } from "./pages/admin/PurchasesPage";
 import { StockOutsPage } from "./pages/admin/StockOutsPage";
 import { StoresPage } from "./pages/admin/StoresPage";
 import { TransfersPage } from "./pages/admin/TransfersPage";
+import { StoreReturnsPage } from "./pages/admin/StoreReturnsPage";
 import { SettingsPage } from "./pages/admin/SettingsPage";
 import { LoginPage } from "./pages/auth/LoginPage";
 
@@ -42,6 +43,7 @@ export function AppRouter() {
         <Route path="purchases" element={<PurchasesPage />} />
         <Route path="stock-outs" element={<StockOutsPage />} />
         <Route path="transfers" element={<TransfersPage />} />
+        <Route path="store-returns" element={<StoreReturnsPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>
       <Route path="*" element={<Navigate to={token ? "/" : "/login"} replace />} />

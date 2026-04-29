@@ -1,4 +1,5 @@
 import { Router } from "express";
+import mongoose from "mongoose";
 import { authMiddleware } from "../authMiddleware.js";
 import { Product } from "../models/Product.js";
 import { Category } from "../models/Category.js";
@@ -6,6 +7,7 @@ import { Supplier } from "../models/Supplier.js";
 import { Purchase } from "../models/Purchase.js";
 import { AppSettings } from "../models/AppSettings.js";
 import { SyncTransfer } from "../models/SyncTransfer.js";
+import { StoreReturnRequest } from "../models/StoreReturnRequest.js";
 import { tenantFilter, withTenant } from "../tenant.js";
 
 const router = Router();
@@ -91,10 +93,15 @@ function parsePayload(body, usdRate) {
   return {
     name: String(body?.name || "").trim(),
     model: String(body?.model || "").trim(),
+    code: String(body?.code || body?.model || "").trim(),
+    gender: ["qiz_bola", "ogil_bola"].includes(String(body?.gender || "").trim())
+      ? String(body?.gender || "").trim()
+      : "",
     barcode: normalizeBarcode(body?.barcode),
     barcodeAliases: normalizeBarcodeAliases(body?.barcodeAliases),
     categoryId: String(body?.categoryId || "").trim(),
     supplierId: String(body?.supplierId || "").trim(),
+    sectionId: String(body?.sectionId || "").trim() || null,
     purchasePrice,
     priceCurrency,
     usdRateUsed: usdRate,
@@ -168,6 +175,210 @@ async function findBarcodeConflict(req, codes, excludeId = null) {
   return Product.findOne(query).select("_id name barcode barcodeAliases").lean();
 }
 
+function normalizeReturnStatus(value) {
+  const status = String(value || "").trim().toLowerCase();
+  return ["pending", "approved", "rejected"].includes(status) ? status : "";
+}
+
+router.get("/store-returns", authMiddleware, async (req, res) => {
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 100));
+  const status = normalizeReturnStatus(req.query.status);
+  const productId = String(req.query.productId || "").trim();
+
+  const query = tenantFilter(req);
+  if (status) query.status = status;
+  if (productId) {
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
+      return res.status(400).json({ message: "Mahsulot ID noto'g'ri" });
+    }
+    query.productId = productId;
+  }
+
+  const [items, total, summaryAgg] = await Promise.all([
+    StoreReturnRequest.find(query)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate({ path: "productId", select: "name barcode quantity unit" })
+      .lean(),
+    StoreReturnRequest.countDocuments(query),
+    StoreReturnRequest.aggregate([
+      { $match: tenantFilter(req) },
+      {
+        $group: {
+          _id: "$status",
+          totalRequested: { $sum: "$requestedQty" },
+          totalApproved: { $sum: "$approvedQty" },
+          count: { $sum: 1 }
+        }
+      }
+    ])
+  ]);
+
+  const summary = {
+    pendingCount: 0,
+    approvedCount: 0,
+    rejectedCount: 0,
+    totalRequested: 0,
+    totalApproved: 0
+  };
+  for (const row of summaryAgg) {
+    const key = String(row?._id || "");
+    if (key === "pending") summary.pendingCount = Number(row?.count || 0);
+    if (key === "approved") summary.approvedCount = Number(row?.count || 0);
+    if (key === "rejected") summary.rejectedCount = Number(row?.count || 0);
+    summary.totalRequested = roundMoney(summary.totalRequested + Number(row?.totalRequested || 0));
+    summary.totalApproved = roundMoney(summary.totalApproved + Number(row?.totalApproved || 0));
+  }
+
+  return res.json({
+    requests: items,
+    total,
+    page,
+    limit,
+    summary
+  });
+});
+
+router.post("/store-returns", authMiddleware, async (req, res) => {
+  const productId = String(req.body?.productId || "").trim();
+  const requestNote = String(req.body?.note || "").trim();
+  const qty = roundMoney(Number(req.body?.quantity));
+
+  if (!mongoose.Types.ObjectId.isValid(productId)) {
+    return res.status(400).json({ message: "Mahsulot ID noto'g'ri" });
+  }
+  if (!Number.isFinite(qty) || qty <= 0) {
+    return res.status(400).json({ message: "Qaytarish soni 0 dan katta bo'lishi kerak" });
+  }
+
+  const product = await Product.findOne(tenantFilter(req, { _id: productId }));
+  if (!product) {
+    return res.status(404).json({ message: "Mahsulot topilmadi" });
+  }
+
+  const currentQty = roundMoney(Number(product.quantity || 0));
+  const availableQty = roundMoney(Math.max(0, currentQty));
+  if (qty - availableQty > 0.0001) {
+    return res.status(400).json({
+      message: `Qaytarish uchun yetarli qoldiq yo'q. Mavjud: ${availableQty}`,
+      availableQty
+    });
+  }
+
+  // Do'kon qaytarish so'rovi yaratilgan zahoti do'kon qoldig'idan band qilinadi.
+  // Tasdiqlanganda qayta qo'shilmasligi, rad etilganda esa qaytarilishi kerak.
+  product.quantity = roundMoney(currentQty - qty);
+  await product.save();
+
+  let request;
+  try {
+    request = await StoreReturnRequest.create(
+      withTenant(req, {
+        productId: product._id,
+        productName: product.name,
+        productBarcode: String(product.barcode || ""),
+        unit: String(product.unit || "dona"),
+        requestedQty: qty,
+        qtyReserved: true,
+        requestNote,
+        requestedByUserId: req.user.id,
+        requestedByUsername: String(req.user.username || "kassa"),
+        requestedAt: new Date()
+      })
+    );
+  } catch (error) {
+    // So'rov yozilishi muvaffaqiyatsiz bo'lsa, qoldiqni eski holatga qaytaramiz.
+    product.quantity = currentQty;
+    await product.save();
+    throw error;
+  }
+
+  return res.status(201).json({ request });
+});
+
+router.post("/store-returns/:id/approve", authMiddleware, async (req, res) => {
+  if (String(req.user.role || "") !== "admin") {
+    return res.status(403).json({ message: "Faqat admin tasdiqlashi mumkin" });
+  }
+
+  const id = String(req.params.id || "").trim();
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ message: "So'rov ID noto'g'ri" });
+  }
+
+  const request = await StoreReturnRequest.findOne(tenantFilter(req, { _id: id, status: "pending" }));
+  if (!request) {
+    return res.status(404).json({ message: "Kutilayotgan qaytarish so'rovi topilmadi" });
+  }
+
+  const product = await Product.findOne(tenantFilter(req, { _id: request.productId }));
+  if (!product) {
+    return res.status(404).json({ message: "Mahsulot topilmadi" });
+  }
+
+  const qty = roundMoney(Number(request.requestedQty || 0));
+  const currentQty = roundMoney(Number(product.quantity || 0));
+
+  // Tasdiq paytida band qilingan miqdor yechiladi:
+  // pending davrida minus bo'lgan bo'lsa ham, legacy bo'lsa ham natija +qty.
+  product.quantity = roundMoney(currentQty + qty);
+  await product.save();
+
+  request.status = "approved";
+  request.approvedQty = qty;
+  request.decisionNote = String(req.body?.note || "").trim();
+  request.approvedByUserId = req.user.id;
+  request.approvedByUsername = String(req.user.username || "admin");
+  request.approvedAt = new Date();
+  await request.save();
+
+  return res.json({
+    request,
+    product: {
+      id: product._id,
+      quantity: product.quantity
+    }
+  });
+});
+
+router.post("/store-returns/:id/reject", authMiddleware, async (req, res) => {
+  if (String(req.user.role || "") !== "admin") {
+    return res.status(403).json({ message: "Faqat admin rad qilishi mumkin" });
+  }
+
+  const id = String(req.params.id || "").trim();
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ message: "So'rov ID noto'g'ri" });
+  }
+
+  const request = await StoreReturnRequest.findOne(tenantFilter(req, { _id: id, status: "pending" }));
+  if (!request) {
+    return res.status(404).json({ message: "Kutilayotgan qaytarish so'rovi topilmadi" });
+  }
+
+  if (request.qtyReserved) {
+    const product = await Product.findOne(tenantFilter(req, { _id: request.productId }));
+    if (!product) {
+      return res.status(404).json({ message: "Mahsulot topilmadi" });
+    }
+    const currentQty = roundMoney(Number(product.quantity || 0));
+    product.quantity = roundMoney(currentQty + roundMoney(Number(request.requestedQty || 0)));
+    await product.save();
+  }
+
+  request.status = "rejected";
+  request.decisionNote = String(req.body?.note || "").trim();
+  request.approvedByUserId = req.user.id;
+  request.approvedByUsername = String(req.user.username || "admin");
+  request.approvedAt = new Date();
+  request.approvedQty = 0;
+  await request.save();
+
+  return res.json({ request });
+});
+
 router.get("/", authMiddleware, async (req, res) => {
   const query = tenantFilter(req);
   if (req.query.categoryId) {
@@ -187,8 +398,15 @@ router.get("/", authMiddleware, async (req, res) => {
   let products = await Product.find(query)
     .populate({ path: "categoryId", select: "name" })
     .populate({ path: "supplierId", select: "name phone address" })
+    .populate({ path: "sectionId", select: "name description" })
     .sort({ createdAt: -1 })
     .lean();
+
+  products = products.map((item) => ({
+    ...item,
+    code: item.code || item.model || "",
+    gender: item.gender || "",
+  }));
 
   if (search) {
     const exactMatches = products.filter((item) => {

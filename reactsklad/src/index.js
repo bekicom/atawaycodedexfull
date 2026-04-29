@@ -8,5 +8,6 @@ export const NAV_ITEMS = [
   { to: "/purchases", label: "Kirim tarixi", icon: "purchases" },
   { to: "/stock-outs", label: "Chiqim", icon: "stockouts" },
   { to: "/transfers", label: "Dokonga yuborish", icon: "transfers" },
+  { to: "/store-returns", label: "Dokondan qaytgan", icon: "storeReturns" },
   { to: "/settings", label: "Sozlamalar", icon: "settings" },
 ];

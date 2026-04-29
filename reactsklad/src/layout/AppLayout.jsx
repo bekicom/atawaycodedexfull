@@ -83,6 +83,15 @@ function SidebarIcon({ name }) {
           <path d="M20 18h-5" />
         </svg>
       );
+    case "storeReturns":
+      return (
+        <svg {...common}>
+          <path d="M20 8V4h-4" />
+          <path d="M4 16v4h4" />
+          <path d="M4 8a8 8 0 0 1 13.66-5.66L20 4" />
+          <path d="M20 16a8 8 0 0 1-13.66 5.66L4 20" />
+        </svg>
+      );
     case "logout":
       return (
         <svg {...common}>
