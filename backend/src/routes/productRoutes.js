@@ -180,6 +180,51 @@ function normalizeReturnStatus(value) {
   return ["pending", "approved", "rejected"].includes(status) ? status : "";
 }
 
+async function syncApprovedStoreReturnToCentral(req, product, qty, requestId) {
+  const centralBaseUrl = String(process.env.CENTRAL_API_BASE_URL || "").trim();
+  const centralUsername = String(process.env.CENTRAL_SYNC_USERNAME || "").trim();
+  const centralPassword = String(process.env.CENTRAL_SYNC_PASSWORD || "").trim();
+  if (!centralBaseUrl || !centralUsername || !centralPassword) {
+    return { skipped: true, reason: "central-config-missing" };
+  }
+
+  const loginResponse = await fetch(`${centralBaseUrl}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: centralUsername, password: centralPassword })
+  });
+  if (!loginResponse.ok) {
+    const payload = await loginResponse.json().catch(() => ({}));
+    throw new Error(payload?.message || "Markaziy tizim login xatosi");
+  }
+  const loginPayload = await loginResponse.json();
+  const token = String(loginPayload?.token || "").trim();
+  if (!token) {
+    throw new Error("Markaziy tizim token qaytarmadi");
+  }
+
+  const approveResponse = await fetch(`${centralBaseUrl}/products/accept-store-return`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      productCode: String(product?.code || "").trim(),
+      barcode: String(product?.barcode || "").trim(),
+      quantity: roundMoney(Number(qty || 0)),
+      unit: String(product?.unit || "dona"),
+      note: `Do'kondan qaytish #${requestId || ""}`
+    })
+  });
+  if (!approveResponse.ok) {
+    const payload = await approveResponse.json().catch(() => ({}));
+    throw new Error(payload?.message || "Markaziy omborga qaytarish yozilmadi");
+  }
+  const approvePayload = await approveResponse.json().catch(() => ({}));
+  return { skipped: false, payload: approvePayload };
+}
+
 router.get("/store-returns", authMiddleware, async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 100));
@@ -325,6 +370,17 @@ router.post("/store-returns/:id/approve", authMiddleware, async (req, res) => {
   // pending davrida minus bo'lgan bo'lsa ham, legacy bo'lsa ham natija +qty.
   product.quantity = roundMoney(currentQty + qty);
   await product.save();
+
+  try {
+    await syncApprovedStoreReturnToCentral(req, product, qty, String(request._id || ""));
+  } catch (syncError) {
+    // Agar markaziy omborga yozishda xato bo'lsa, local holatni ham rollback qilamiz.
+    product.quantity = currentQty;
+    await product.save();
+    return res.status(502).json({
+      message: `Markaziy omborga yozishda xato: ${syncError?.message || "noma'lum xato"}`
+    });
+  }
 
   request.status = "approved";
   request.approvedQty = qty;
