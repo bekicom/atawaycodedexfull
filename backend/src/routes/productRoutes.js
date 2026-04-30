@@ -180,7 +180,7 @@ function normalizeReturnStatus(value) {
   return ["pending", "approved", "rejected"].includes(status) ? status : "";
 }
 
-async function syncApprovedStoreReturnToCentral(req, product, qty, requestId) {
+async function loginToCentral() {
   const centralBaseUrl = String(process.env.CENTRAL_API_BASE_URL || "").trim();
   const centralUsername = String(process.env.CENTRAL_SYNC_USERNAME || "").trim();
   const centralPassword = String(process.env.CENTRAL_SYNC_PASSWORD || "").trim();
@@ -202,12 +202,54 @@ async function syncApprovedStoreReturnToCentral(req, product, qty, requestId) {
   if (!token) {
     throw new Error("Markaziy tizim token qaytarmadi");
   }
+  return { skipped: false, token, centralBaseUrl };
+}
 
-  const approveResponse = await fetch(`${centralBaseUrl}/products/accept-store-return`, {
+async function syncPendingStoreReturnToCentral(req, product, qty, requestId, requestNote = "") {
+  const login = await loginToCentral();
+  if (login.skipped) {
+    throw new Error("Markaziy sinxron sozlanmagan (CENTRAL_API_BASE_URL / login)");
+  }
+
+  const response = await fetch(`${login.centralBaseUrl}/products/store-returns/external`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`
+      Authorization: `Bearer ${login.token}`
+    },
+    body: JSON.stringify({
+      productCode: String(product?.code || "").trim(),
+      barcode: String(product?.barcode || "").trim(),
+      quantity: roundMoney(Number(qty || 0)),
+      unit: String(product?.unit || "dona"),
+      requestedByUsername: String(req.user?.username || "kassa"),
+      requestNote: String(requestNote || ""),
+      sourceRequestId: String(requestId || ""),
+      sourceStoreCode: String(process.env.STORE_CODE || "").trim(),
+      sourceStoreName: String(process.env.STORE_NAME || "").trim()
+    })
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload?.message || "Markaziy tizimga qaytarish so'rovi yuborilmadi");
+  }
+
+  const payload = await response.json().catch(() => ({}));
+  return { skipped: false, payload };
+}
+
+async function syncApprovedStoreReturnToCentral(req, product, qty, requestId) {
+  const login = await loginToCentral();
+  if (login.skipped) {
+    throw new Error("Markaziy sinxron sozlanmagan (CENTRAL_API_BASE_URL / login)");
+  }
+
+  const approveResponse = await fetch(`${login.centralBaseUrl}/products/accept-store-return`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${login.token}`
     },
     body: JSON.stringify({
       productCode: String(product?.code || "").trim(),
@@ -224,6 +266,80 @@ async function syncApprovedStoreReturnToCentral(req, product, qty, requestId) {
   const approvePayload = await approveResponse.json().catch(() => ({}));
   return { skipped: false, payload: approvePayload };
 }
+
+router.post("/store-returns/external", authMiddleware, async (req, res) => {
+  const productIdRaw = String(req.body?.productId || "").trim();
+  const productCode = String(req.body?.productCode || "").trim();
+  const barcode = String(req.body?.barcode || "").trim();
+  const qty = roundMoney(Number(req.body?.quantity));
+  const unit = normalizeUnit(req.body?.unit || "dona");
+  const requestNote = String(req.body?.requestNote || req.body?.note || "").trim();
+  const sourceRequestId = String(req.body?.sourceRequestId || "").trim();
+  const sourceStoreCode = String(req.body?.sourceStoreCode || "").trim();
+  const sourceStoreName = String(req.body?.sourceStoreName || "").trim();
+  const requestedByUsername = String(req.body?.requestedByUsername || req.user?.username || "kassa").trim();
+
+  if (!Number.isFinite(qty) || qty <= 0) {
+    return res.status(400).json({ message: "Qaytarish soni 0 dan katta bo'lishi kerak" });
+  }
+
+  let product = null;
+  if (mongoose.Types.ObjectId.isValid(productIdRaw)) {
+    product = await Product.findOne(tenantFilter(req, { _id: productIdRaw }));
+  }
+  if (!product && (productCode || barcode)) {
+    product = await Product.findOne(
+      tenantFilter(req, {
+        $or: [
+          ...(productCode ? [{ code: productCode }] : []),
+          ...(barcode ? [{ barcode }, { barcodeAliases: barcode }] : [])
+        ]
+      })
+    );
+  }
+  if (!product) {
+    return res.status(404).json({ message: "Markaziy omborda mos mahsulot topilmadi" });
+  }
+
+  const alreadyExists = sourceRequestId
+    ? await StoreReturnRequest.findOne(
+        tenantFilter(req, {
+          sourceRequestId,
+          sourceStoreCode,
+          status: "pending"
+        })
+      )
+    : null;
+  if (alreadyExists) {
+    return res.status(200).json({ request: alreadyExists, duplicated: true });
+  }
+
+  const sourceInfo = [sourceStoreCode, sourceStoreName].filter(Boolean).join(" / ");
+  const notePrefix = sourceInfo ? `Do'kon: ${sourceInfo}` : "Do'kondan so'rov";
+  const mergedNote = [notePrefix, requestNote].filter(Boolean).join(" | ");
+
+  const request = await StoreReturnRequest.create(
+    withTenant(req, {
+      productId: product._id,
+      productName: product.name,
+      productBarcode: String(product.barcode || ""),
+      unit: String(unit || product.unit || "dona"),
+      requestedQty: qty,
+      approvedQty: 0,
+      qtyReserved: false,
+      status: "pending",
+      requestNote: mergedNote,
+      sourceRequestId,
+      sourceStoreCode,
+      sourceStoreName,
+      requestedByUserId: req.user.id,
+      requestedByUsername: requestedByUsername || "kassa",
+      requestedAt: new Date()
+    })
+  );
+
+  return res.status(201).json({ request });
+});
 
 router.get("/store-returns", authMiddleware, async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
@@ -333,11 +449,26 @@ router.post("/store-returns", authMiddleware, async (req, res) => {
         requestedAt: new Date()
       })
     );
+    await syncPendingStoreReturnToCentral(
+      req,
+      product,
+      qty,
+      String(request._id || ""),
+      requestNote
+    );
   } catch (error) {
-    // So'rov yozilishi muvaffaqiyatsiz bo'lsa, qoldiqni eski holatga qaytaramiz.
-    product.quantity = currentQty;
-    await product.save();
-    throw error;
+    // Local so'rov va qoldiq saqlanadi, markaziy sync keyinroq qayta urinish bilan bajariladi.
+    // Bu holatda foydalanuvchi ishini to'xtatib qo'ymaslik uchun 2xx qaytaramiz.
+    console.error("[store-return][sync-pending][warn]", {
+      requestId: String(request?._id || ""),
+      productId: String(product?._id || ""),
+      qty,
+      error: error?.message || String(error)
+    });
+    return res.status(201).json({
+      request,
+      syncWarning: `Markaziy serverga yuborilmadi: ${error?.message || "noma'lum xato"}`
+    });
   }
 
   return res.status(201).json({ request });

@@ -18,6 +18,9 @@ const storeReturnRequestSchema = new mongoose.Schema(
     },
     requestNote: { type: String, default: "", trim: true },
     decisionNote: { type: String, default: "", trim: true },
+    sourceRequestId: { type: String, default: "", trim: true, index: true },
+    sourceStoreCode: { type: String, default: "", trim: true },
+    sourceStoreName: { type: String, default: "", trim: true },
     requestedByUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     requestedByUsername: { type: String, required: true, trim: true },
     approvedByUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
@@ -30,5 +33,6 @@ const storeReturnRequestSchema = new mongoose.Schema(
 
 storeReturnRequestSchema.index({ tenantId: 1, status: 1, createdAt: -1 });
 storeReturnRequestSchema.index({ tenantId: 1, productId: 1, status: 1 });
+storeReturnRequestSchema.index({ tenantId: 1, sourceRequestId: 1, sourceStoreCode: 1 });
 
 export const StoreReturnRequest = mongoose.model("StoreReturnRequest", storeReturnRequestSchema);
